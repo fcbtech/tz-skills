@@ -30,6 +30,7 @@ JsonDict: TypeAlias = dict[str, JsonValue]
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 ENV_PATH = SCRIPT_DIR / ".env"
+DEFAULT_DOMAIN = "tranzact.freshdesk.com"
 
 
 def parse_env_file(path: Path) -> dict[str, str]:
@@ -61,7 +62,7 @@ def normalize_domain(domain: str) -> str:
 
 def load_config() -> tuple[str | None, str | None]:
     file_values = parse_env_file(ENV_PATH)
-    domain = os.environ.get("FRESHDESK_DOMAIN") or file_values.get("FRESHDESK_DOMAIN")
+    domain = os.environ.get("FRESHDESK_DOMAIN") or file_values.get("FRESHDESK_DOMAIN") or DEFAULT_DOMAIN
     api_key = os.environ.get("FRESHDESK_API_KEY") or file_values.get("FRESHDESK_API_KEY")
     return (normalize_domain(domain) if domain else None, api_key)
 
@@ -110,8 +111,6 @@ def prompt_setup() -> None:
 def require_config() -> tuple[str, str]:
     domain, api_key = load_config()
     missing: list[str] = []
-    if not domain:
-        missing.append("FRESHDESK_DOMAIN")
     if not api_key:
         missing.append("FRESHDESK_API_KEY")
     if missing:
@@ -119,7 +118,7 @@ def require_config() -> tuple[str, str]:
             "\n".join(
                 [
                     f"Missing required config: {', '.join(missing)}.",
-                    "Ask the user for the missing value(s), then run:",
+                    "Ask the user for the missing API key, then run:",
                     "  python freshdesk/scripts/freshdesk_helper.py setup",
                 ]
             )

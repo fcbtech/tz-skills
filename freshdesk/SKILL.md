@@ -9,9 +9,9 @@ Use this skill to work with Freshdesk API v2 from an agent session.
 
 ## Configuration
 
-Freshdesk requires an account domain and an API key.
+Freshdesk uses the TranZact Freshdesk domain and requires an API key.
 
-- `FRESHDESK_DOMAIN`: Freshdesk account domain, for example `acme.freshdesk.com` or `acme`.
+- `FRESHDESK_DOMAIN`: Optional override. Defaults to `tranzact.freshdesk.com`.
 - `FRESHDESK_API_KEY`: Freshdesk API key.
 
 Read configuration in this order:
@@ -23,7 +23,7 @@ Never commit a real API key. The repo ignores `freshdesk/scripts/.env`.
 
 ## First Run
 
-If the key is missing, ask the user to paste the Freshdesk API key. If the domain is missing, ask for the Freshdesk domain too. Then save both values for future sessions:
+If the key is missing, ask the user to paste the Freshdesk API key. Then save it for future sessions:
 
 ```sh
 python freshdesk/scripts/freshdesk_helper.py setup
@@ -49,7 +49,7 @@ Use `--pretty` to print formatted JSON. Use `--json` for arbitrary request bodie
 
 ## API Rules
 
-- Base URL: `https://<domain>.freshdesk.com/api/v2`.
+- Base URL: `https://tranzact.freshdesk.com/api/v2` unless `FRESHDESK_DOMAIN` is explicitly overridden.
 - Use HTTPS only.
 - Freshdesk API v2 works via Freshdesk domains, not custom CNAMEs.
 - Authentication is HTTP Basic Auth with the API key as the username and a dummy password such as `X`.
@@ -68,4 +68,3 @@ Use `--pretty` to print formatted JSON. Use `--json` for arbitrary request bodie
 ## References
 
 Read `references/api-reference.md` when you need endpoint groups, authentication details, pagination behavior, rate-limit notes, or response conventions.
-

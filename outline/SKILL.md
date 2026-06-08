@@ -9,18 +9,31 @@ Interact with the TranZact Outline instance for document and collection manageme
 
 ## Configuration
 
-This skill uses the TranZact Outline URL and expects the API token to be set in the environment before any API call:
+This skill uses the TranZact Outline URL and expects an API token before any API call:
 
 | Variable | Description | Example |
 |---|---|---|
 | `OUTLINE_BASE_URL` | Optional override for the Outline base URL | `https://outline.letstranzact.com` |
 | `OUTLINE_API_TOKEN` | Personal API token (Settings -> API Tokens) | `<outline-api-token>` |
 
-The default base URL is `https://outline.letstranzact.com`. The agent should read `OUTLINE_API_TOKEN` from the environment, never hardcode it, and never echo it to logs or chat.
+The default base URL is `https://outline.letstranzact.com`. The agent should read config in this order:
+
+1. Environment variables.
+2. `scripts/.env` adjacent to `scripts/outline_helper.py`.
+
+Never hardcode `OUTLINE_API_TOKEN`, and never echo it to logs or chat. The repo ignores `outline/scripts/.env`.
 
 ```bash
 export OUTLINE_API_TOKEN="<outline-api-token>"
 ```
+
+If the token is missing, ask the user to paste the Outline API token. Then save it for future sessions:
+
+```bash
+python outline/scripts/outline_helper.py setup
+```
+
+The helper writes `outline/scripts/.env` with mode `0600`.
 
 Use `scripts/outline_helper.py` for common operations. Read `references/reference.md` when endpoint details, parameters, error codes, or Markdown support are needed.
 

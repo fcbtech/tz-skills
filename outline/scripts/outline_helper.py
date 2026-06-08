@@ -5,6 +5,7 @@ Outline API Helper Script
 Usage: python outline_helper.py <command> [args]
 
 Commands:
+  setup                         Prompt for config and save scripts/.env
   list-collections              List all collections
   list-docs [collection_id]     List documents (optionally in a collection)
   search <query>                Search documents
@@ -17,7 +18,9 @@ Commands:
 from __future__ import annotations
 
 import json
+import getpass
 import os
+import stat
 import sys
 import urllib.error
 import urllib.request
@@ -27,27 +30,98 @@ from typing import TypeAlias, cast
 JsonValue: TypeAlias = str | int | float | bool | None | list["JsonValue"] | dict[str, "JsonValue"]
 JsonDict: TypeAlias = dict[str, JsonValue]
 
-BASE_URL = os.environ.get("OUTLINE_BASE_URL", "https://outline.letstranzact.com").rstrip("/")
-API_TOKEN = os.environ.get("OUTLINE_API_TOKEN")
+SCRIPT_DIR = Path(__file__).resolve().parent
+ENV_PATH = SCRIPT_DIR / ".env"
+DEFAULT_BASE_URL = "https://outline.letstranzact.com"
 
-if not API_TOKEN:
-    sys.exit(
+
+def parse_env_file(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not path.exists():
+        return values
+
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip().strip('"').strip("'")
+    return values
+
+
+def normalize_base_url(value: str) -> str:
+    return value.strip().rstrip("/")
+
+
+def load_config() -> tuple[str, str | None]:
+    file_values = parse_env_file(ENV_PATH)
+    base_url = (
+        os.environ.get("OUTLINE_BASE_URL")
+        or file_values.get("OUTLINE_BASE_URL")
+        or DEFAULT_BASE_URL
+    )
+    api_token = os.environ.get("OUTLINE_API_TOKEN") or file_values.get("OUTLINE_API_TOKEN")
+    return normalize_base_url(base_url), api_token
+
+
+def save_config(base_url: str, api_token: str) -> None:
+    _ = ENV_PATH.write_text(
         "\n".join(
             [
-                "Error: OUTLINE_API_TOKEN must be set in the environment.",
-                "  export OUTLINE_API_TOKEN='<outline-api-token>'",
+                f'OUTLINE_BASE_URL="{normalize_base_url(base_url)}"',
+                f'OUTLINE_API_TOKEN="{api_token.strip()}"',
+                "",
             ]
-        )
+        ),
+        encoding="utf-8",
     )
+    ENV_PATH.chmod(stat.S_IRUSR | stat.S_IWUSR)
+
+
+def prompt_setup() -> None:
+    current_base_url, current_token = load_config()
+    base_url_prompt = f"Outline base URL [{current_base_url}]: "
+    base_url = input(base_url_prompt).strip() or current_base_url
+
+    if current_token:
+        use_existing = input("Existing API token found. Keep it? [Y/n]: ").strip().lower()
+        if use_existing in {"", "y", "yes"}:
+            api_token = current_token
+        else:
+            api_token = getpass.getpass("Outline API token: ").strip()
+    else:
+        api_token = getpass.getpass("Outline API token: ").strip()
+
+    if not api_token:
+        sys.exit("Outline API token is required.")
+
+    save_config(base_url, api_token)
+    print(f"Saved Outline config to {ENV_PATH}")
+
+
+def require_config() -> tuple[str, str]:
+    base_url, api_token = load_config()
+    if not api_token:
+        sys.exit(
+            "\n".join(
+                [
+                    "Error: OUTLINE_API_TOKEN is required.",
+                    "Ask the user for the missing API token, then run:",
+                    "  python outline/scripts/outline_helper.py setup",
+                ]
+            )
+        )
+    return base_url, api_token
 
 
 def api_call(endpoint: str, data: JsonDict) -> JsonDict:
     """Make API call to Outline."""
+    base_url, api_token = require_config()
     request = urllib.request.Request(
-        f"{BASE_URL}/api/{endpoint}",
+        f"{base_url}/api/{endpoint}",
         data=json.dumps(data).encode("utf-8"),
         headers={
-            "Authorization": f"Bearer {API_TOKEN}",
+            "Authorization": f"Bearer {api_token}",
             "Content-Type": "application/json",
         },
         method="POST",
@@ -181,7 +255,8 @@ def create_document(collection_id: str, title: str, content_file: str):
     if result.get("ok"):
         doc = as_dict(result.get("data"))
         print(f"Created document: {as_text(doc.get('id'))}")
-        print(f"URL: {BASE_URL}{as_text(doc.get('url'))}")
+        base_url, _api_token = require_config()
+        print(f"URL: {base_url}{as_text(doc.get('url'))}")
     else:
         print(f"Error: {error_message(result)}")
 
@@ -223,7 +298,9 @@ def main():
 
     command = sys.argv[1]
 
-    if command == "list-collections":
+    if command == "setup":
+        prompt_setup()
+    elif command == "list-collections":
         list_collections()
     elif command == "list-docs":
         collection_id = sys.argv[2] if len(sys.argv) > 2 else None

@@ -63,8 +63,16 @@ To use it locally or from an agent runtime:
 export OUTLINE_API_TOKEN="<outline-api-token>"
 ```
 
-3. Install or copy the `outline/` directory into the agent's skills directory.
-4. Use the helper script for common operations:
+3. If the token is not present, run the setup command and paste it when prompted:
+
+```sh
+python outline/scripts/outline_helper.py setup
+```
+
+The setup command saves credentials to `outline/scripts/.env` with local-only file permissions. That file is ignored by git and must not be committed.
+
+4. Install or copy the `outline/` directory into the agent's skills directory.
+5. Use the helper script for common operations:
 
 ```sh
 python outline/scripts/outline_helper.py list-collections
@@ -76,16 +84,15 @@ Do not commit personal API tokens. The repo may contain the shared Outline URL, 
 
 ## Freshdesk Skill Setup
 
-The `freshdesk/` skill works with Freshdesk API v2. It needs a Freshdesk domain and API key.
+The `freshdesk/` skill works with Freshdesk API v2 for `tranzact.freshdesk.com`. It needs a Freshdesk API key.
 
-Configuration is read from environment variables first:
+Configuration is read from environment variables first. The domain is optional and defaults to `tranzact.freshdesk.com`:
 
 ```sh
-export FRESHDESK_DOMAIN="yourcompany.freshdesk.com"
 export FRESHDESK_API_KEY="<freshdesk-api-key>"
 ```
 
-If these are not present, run the setup command and paste the values when prompted:
+If the key is not present, run the setup command and paste it when prompted:
 
 ```sh
 python freshdesk/scripts/freshdesk_helper.py setup
