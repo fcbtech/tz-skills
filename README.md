@@ -48,7 +48,7 @@ For a repo-wide check, validate every directory that contains a `SKILL.md`.
 
 ## Installing One Skill
 
-Each top-level folder with a `SKILL.md` is an installable skill. For example, `freshdesk/`, `outline/`, and `newrelic/` can be installed independently.
+Each top-level folder with a `SKILL.md` is an installable skill. For example, `freshdesk/`, `outline/`, `newrelic/`, and `keka/` can be installed independently.
 
 First clone the repository:
 
@@ -71,7 +71,7 @@ mkdir -p ~/.codex/skills
 cp -R freshdesk ~/.codex/skills/freshdesk
 ```
 
-Replace `freshdesk` with another skill directory name, such as `outline` or `newrelic`, to install a different skill.
+Replace `freshdesk` with another skill directory name, such as `outline`, `newrelic`, or `keka`, to install a different skill.
 
 After installing, restart Claude Code or Codex so the new skill is discovered. Then invoke the skill directly by name or ask naturally:
 
@@ -167,6 +167,37 @@ newrelic nrql query --accountId <account-id> --query 'SELECT count(*) FROM Trans
 newrelic entity search --name "production-api"
 newrelic apm application search --name "my-app"
 newrelic nerdgraph query 'query { actor { user { email } } }'
+```
+
+## Keka Skill Setup
+
+The `keka/` skill works with Keka HRMS APIs for Core HR, attendance, payroll, hire, expense, leave, reporting, exports, and API troubleshooting.
+
+Keka uses OAuth-style token authentication. Configure credentials in the local shell or agent environment:
+
+```sh
+export KEKA_SUBDOMAIN="<tenant-subdomain>"
+export KEKA_ENV="keka"
+export KEKA_CLIENT_ID="<client-id>"
+export KEKA_CLIENT_SECRET="<client-secret>"
+export KEKA_API_KEY="<api-key>"
+```
+
+Alternatively, run the setup helper and paste the values when prompted:
+
+```sh
+python keka/scripts/keka_helper.py setup
+```
+
+The setup command saves credentials to `keka/scripts/.env` with local-only file permissions. That file is ignored by git and must not be committed.
+
+Use `KEKA_ENV="kekademo"` for sandbox/demo tenants. Do not commit Keka client secrets, API keys, access tokens, exports, or employee/payroll data.
+
+The public Keka API docs are at:
+
+```text
+https://apidocs.keka.com/
+https://developers.keka.com/docs/getting-started-with-keka-apis
 ```
 
 ## Agent Instructions
