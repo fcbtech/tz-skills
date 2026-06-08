@@ -46,6 +46,34 @@ skills-ref validate ./skill-name
 
 For a repo-wide check, validate every directory that contains a `SKILL.md`.
 
+## Outline Skill Setup
+
+The `outline/` skill is configured for the TranZact Outline instance at:
+
+```text
+https://outline.letstranzact.com
+```
+
+To use it locally or from an agent runtime:
+
+1. Create a personal Outline API token from Outline settings.
+2. Export the token in the shell or agent environment:
+
+```sh
+export OUTLINE_API_TOKEN="<outline-api-token>"
+```
+
+3. Install or copy the `outline/` directory into the agent's skills directory.
+4. Use the helper script for common operations:
+
+```sh
+python outline/scripts/outline_helper.py list-collections
+python outline/scripts/outline_helper.py search "payments"
+python outline/scripts/outline_helper.py read DOCUMENT_UUID
+```
+
+Do not commit personal API tokens. The repo may contain the shared Outline URL, but authentication must stay in environment variables or the user's local secret store.
+
 ## Agent Instructions
 
 - `AGENTS.md` contains repo instructions for Codex-style agents.
