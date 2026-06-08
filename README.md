@@ -48,7 +48,7 @@ For a repo-wide check, validate every directory that contains a `SKILL.md`.
 
 ## Installing One Skill
 
-Each top-level folder with a `SKILL.md` is an installable skill. For example, `freshdesk/` and `outline/` can be installed independently.
+Each top-level folder with a `SKILL.md` is an installable skill. For example, `freshdesk/`, `outline/`, and `newrelic/` can be installed independently.
 
 First clone the repository:
 
@@ -71,7 +71,7 @@ mkdir -p ~/.codex/skills
 cp -R freshdesk ~/.codex/skills/freshdesk
 ```
 
-Replace `freshdesk` with another skill directory name, such as `outline`, to install a different skill.
+Replace `freshdesk` with another skill directory name, such as `outline` or `newrelic`, to install a different skill.
 
 After installing, restart Claude Code or Codex so the new skill is discovered. Then invoke the skill directly by name or ask naturally:
 
@@ -143,6 +143,30 @@ python freshdesk/scripts/freshdesk_helper.py me
 python freshdesk/scripts/freshdesk_helper.py list-tickets --page 1 --per-page 30
 python freshdesk/scripts/freshdesk_helper.py get-ticket 123
 python freshdesk/scripts/freshdesk_helper.py search-tickets "status:2 AND priority:1"
+```
+
+## New Relic Skill Setup
+
+The `newrelic/` skill uses the New Relic CLI for diagnostics, NRQL queries, entity search, APM inspection, workloads, synthetics, and NerdGraph.
+
+Install and configure the New Relic CLI before using the skill. The skill does not store New Relic credentials in this repository.
+
+Create a local New Relic CLI profile:
+
+```sh
+newrelic profile add --profile tranzact --apiKey <new-relic-user-key> --accountId <account-id> --region US
+newrelic profile default --profile tranzact
+```
+
+Use `--region EU` instead if the account is in the EU region. Do not commit New Relic API keys, license keys, or generated CLI config.
+
+Common commands the skill will run:
+
+```sh
+newrelic nrql query --accountId <account-id> --query 'SELECT count(*) FROM Transaction SINCE 1 hour ago'
+newrelic entity search --name "production-api"
+newrelic apm application search --name "my-app"
+newrelic nerdgraph query 'query { actor { user { email } } }'
 ```
 
 ## Agent Instructions

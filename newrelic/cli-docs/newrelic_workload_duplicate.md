@@ -1,0 +1,47 @@
+## newrelic workload duplicate
+
+Duplicate a New Relic One workload.
+
+### Synopsis
+
+Duplicate a New Relic One workload
+
+The duplicate command targets an existing workload by its entity GUID, and clones
+it to the provided account ID. An optional name can be provided for the new workload.
+If the name isn't specified, the name + ' copy' of the source workload is used to
+compose the new name.
+
+
+```
+newrelic workload duplicate [flags]
+```
+
+### Examples
+
+```
+newrelic workload duplicate --guid 'MjUyMDUyOHxBOE28QVBQTElDQVRDT058MjE1MDM3Nzk1' --accountId 12345678 --name 'New Workload'
+```
+
+### Options
+
+```
+  -g, --guid string   the GUID of the workload you want to duplicate
+  -h, --help          help for duplicate
+  -n, --name string   the name of the workload to duplicate
+```
+
+### Options inherited from parent commands
+
+```
+  -a, --accountId int    the account ID to use. Can be overridden by setting NEW_RELIC_ACCOUNT_ID
+      --debug            debug level logging
+      --format string    output text format [JSON, Text, YAML] (default "JSON")
+      --plain            output compact text
+      --profile string   the authentication profile to use
+      --trace            trace level logging
+```
+
+### SEE ALSO
+
+* [newrelic workload](newrelic_workload.md)	 - Interact with New Relic One workloads
+

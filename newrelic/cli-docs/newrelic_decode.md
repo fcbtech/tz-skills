@@ -1,0 +1,33 @@
+## newrelic decode
+
+Decodes NR1 URL Strings 
+
+### Examples
+
+```
+newrelic decode <subcommand>
+```
+
+### Options
+
+```
+  -h, --help   help for decode
+```
+
+### Options inherited from parent commands
+
+```
+  -a, --accountId int    the account ID to use. Can be overridden by setting NEW_RELIC_ACCOUNT_ID
+      --debug            debug level logging
+      --format string    output text format [JSON, Text, YAML] (default "JSON")
+      --plain            output compact text
+      --profile string   the authentication profile to use
+      --trace            trace level logging
+```
+
+### SEE ALSO
+
+* [newrelic](newrelic.md)	 - The New Relic CLI
+* [newrelic decode entity](newrelic_decode_entity.md)	 - Decodes NR1 Entitys 
+* [newrelic decode url](newrelic_decode_url.md)	 - Decodes NR1 URL Strings 
+
