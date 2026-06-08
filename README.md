@@ -46,6 +46,42 @@ skills-ref validate ./skill-name
 
 For a repo-wide check, validate every directory that contains a `SKILL.md`.
 
+## Installing One Skill
+
+Each top-level folder with a `SKILL.md` is an installable skill. For example, `freshdesk/` and `outline/` can be installed independently.
+
+First clone the repository:
+
+```sh
+git clone https://github.com/fcbtech/tz-skills.git
+cd tz-skills
+```
+
+Install one skill for Claude Code:
+
+```sh
+mkdir -p ~/.claude/skills
+cp -R freshdesk ~/.claude/skills/freshdesk
+```
+
+Install one skill for Codex:
+
+```sh
+mkdir -p ~/.codex/skills
+cp -R freshdesk ~/.codex/skills/freshdesk
+```
+
+Replace `freshdesk` with another skill directory name, such as `outline`, to install a different skill.
+
+After installing, restart Claude Code or Codex so the new skill is discovered. Then invoke the skill directly by name or ask naturally:
+
+```text
+/freshdesk
+List Freshdesk tickets assigned to me.
+```
+
+If the skill uses credentials, set them in the environment or run that skill's setup helper after copying it. Do not commit `.env` files or API tokens.
+
 ## Outline Skill Setup
 
 The `outline/` skill is configured for the TranZact Outline instance at:
