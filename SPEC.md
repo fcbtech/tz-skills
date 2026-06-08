@@ -1,0 +1,1 @@
+For specifications on how to write and maintain skills visit https://agentskills.io/specification
