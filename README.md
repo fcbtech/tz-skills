@@ -74,6 +74,34 @@ python outline/scripts/outline_helper.py read DOCUMENT_UUID
 
 Do not commit personal API tokens. The repo may contain the shared Outline URL, but authentication must stay in environment variables or the user's local secret store.
 
+## Freshdesk Skill Setup
+
+The `freshdesk/` skill works with Freshdesk API v2. It needs a Freshdesk domain and API key.
+
+Configuration is read from environment variables first:
+
+```sh
+export FRESHDESK_DOMAIN="yourcompany.freshdesk.com"
+export FRESHDESK_API_KEY="<freshdesk-api-key>"
+```
+
+If these are not present, run the setup command and paste the values when prompted:
+
+```sh
+python freshdesk/scripts/freshdesk_helper.py setup
+```
+
+The setup command saves credentials to `freshdesk/scripts/.env` with local-only file permissions. That file is ignored by git and must not be committed.
+
+Common helper commands:
+
+```sh
+python freshdesk/scripts/freshdesk_helper.py me
+python freshdesk/scripts/freshdesk_helper.py list-tickets --page 1 --per-page 30
+python freshdesk/scripts/freshdesk_helper.py get-ticket 123
+python freshdesk/scripts/freshdesk_helper.py search-tickets "status:2 AND priority:1"
+```
+
 ## Agent Instructions
 
 - `AGENTS.md` contains repo instructions for Codex-style agents.

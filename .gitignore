@@ -1,0 +1,4 @@
+.ruff_cache/
+freshdesk/scripts/.env
+outline/scripts/.env
+
