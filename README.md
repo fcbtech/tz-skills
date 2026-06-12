@@ -71,7 +71,19 @@ mkdir -p ~/.codex/skills
 cp -R freshdesk ~/.codex/skills/freshdesk
 ```
 
-Replace `freshdesk` with another skill directory name, such as `outline`, `newrelic`, or `keka`, to install a different skill.
+Replace `freshdesk` with another skill directory name, such as `outline`, `newrelic`, `keka`, `mysql`, `slack`, or `oncall-agent`, to install a different skill.
+
+## Bulk Install (Recommended for Claude Code)
+
+To install every skill in this repo into `~/.claude/skills/` as symlinks so `git pull` instantly updates them:
+
+```sh
+bin/install-symlinks.sh                 # link every skill
+bin/install-symlinks.sh mysql freshdesk # link a subset
+bin/install-symlinks.sh --dry-run       # preview without changes
+```
+
+The installer is idempotent and refuses to overwrite an existing real directory at the destination (you'll get a `warn:` line for that skill — back up or remove the existing directory yourself if you want to switch to the repo version).
 
 After installing, restart Claude Code or Codex so the new skill is discovered. Then invoke the skill directly by name or ask naturally:
 
@@ -199,6 +211,135 @@ The public Keka API docs are at:
 https://apidocs.keka.com/
 https://developers.keka.com/docs/getting-started-with-keka-apis
 ```
+
+## MySQL Skill Setup
+
+The `mysql/` skill talks to MySQL via the `mysql` CLI using **named profiles** stored as `[client]` cnf files in `~/.tz-oncall/<profile>.cnf` (mode 0600). It auto-discovers any profile present in that directory.
+
+The skill ships a **table-name guardrail**: before any query is sent, the helper extracts identifiers after `FROM`/`JOIN`/`UPDATE`/`INSERT INTO`/`DELETE FROM` and validates them against `information_schema.tables` (24h-cached per profile at `~/.tz-oncall/schema-cache/<profile>.json`). Unknown tables fail loud with a difflib suggestion (`unknown table 'auth_users'; did you mean: auth_user`).
+
+Create or replace a profile interactively:
+
+```sh
+python mysql/scripts/mysql_helper.py setup --profile tz-prod-read-replica
+```
+
+Or write a cnf manually (typical for the TranZact on-call set):
+
+```sh
+mkdir -p ~/.tz-oncall && chmod 700 ~/.tz-oncall
+cat <<'EOF' > ~/.tz-oncall/tz-prod-read-replica.cnf
+[client]
+host=<DB_READ_REPLICA_HOST>
+user=<DB_READ_REPLICA_USER>
+password=<DB_READ_REPLICA_PASSWORD>
+database=<DB_READ_REPLICA_NAME>
+EOF
+chmod 600 ~/.tz-oncall/tz-prod-read-replica.cnf
+```
+
+Common helper commands:
+
+```sh
+python mysql/scripts/mysql_helper.py list-profiles
+python mysql/scripts/mysql_helper.py run --profile tz-prod-read-replica --sql 'SELECT 1'
+python mysql/scripts/mysql_helper.py run --profile mstag-dmz --file path/to/query.sql --var USER_ID=42
+
+# Mandatory dry-run before any write; writes only on mstag-dmz.
+python mysql/scripts/mysql_helper.py dry-run-write \
+    --profile mstag-dmz \
+    --pre-select  "SELECT id, is_active FROM auth_user WHERE id = 12345" \
+    --post-select "SELECT id, is_active FROM auth_user WHERE id = 12345" \
+    --sql         "UPDATE auth_user SET is_active = 1 WHERE id = 12345"
+```
+
+Force-refresh the schema cache after a table rename:
+
+```sh
+python mysql/scripts/mysql_helper.py schema-refresh --profile mstag-dmz
+```
+
+Unit tests for the guardrail:
+
+```sh
+python mysql/tests/test_guardrail.py -v
+```
+
+Never commit cnf files. They live in `~/.tz-oncall/` outside the repo and are written with mode 0600 by the helper.
+
+## Slack Skill Setup
+
+The `slack/` skill posts messages and runs lookups against Slack via either an incoming webhook OR the Web API. The helper auto-detects which mode to use:
+
+| Variable | Mode | Capability |
+|----------|------|------------|
+| `SLACK_BOT_TOKEN` (`xoxb-...`) | Web API | Threading, mentions, channel/user lookup |
+| `SLACK_WEBHOOK_URL` | Incoming webhook | Single channel, plain text + Block Kit only |
+| `SLACK_DEFAULT_CHANNEL` | Either | Default channel for `post` when `--channel` is omitted |
+
+Configure interactively (prompts for whichever values you want):
+
+```sh
+python slack/scripts/slack_helper.py setup
+```
+
+The setup command saves credentials to `slack/scripts/.env` with mode `0600`. That file is ignored by git and must not be committed.
+
+Common helper commands:
+
+```sh
+# Auto mode — bot token if set, else webhook
+python slack/scripts/slack_helper.py post --channel "#oncall" --text "found a stuck IAP"
+
+# Threaded reply (Web API only)
+python slack/scripts/slack_helper.py post-message --channel "#oncall" --text "follow-up" --thread-ts 1700000000.000100
+
+# Lookups
+python slack/scripts/slack_helper.py lookup-user dev@letstranzact.com
+python slack/scripts/slack_helper.py lookup-channel oncall
+```
+
+How to mint credentials, scope requirements, and Block Kit reference live in `slack/references/api-reference.md`.
+
+## On-Call Agent Skill Setup
+
+The `oncall-agent/` skill is the TranZact on-call investigation **orchestrator**. It composes the `freshdesk`, `newrelic`, and `mysql` skills under a TZ-specific discipline (mandatory customer-id resolution, polyrepo routing, transactional dry-run protocol, constrained output shape).
+
+Prerequisites — install and configure these sibling skills first:
+
+1. `freshdesk` — for ticket fetch.
+2. `newrelic` — for NRQL.
+3. `mysql` — for replica + mstag-dmz access. **The dry-run protocol lives here.**
+4. `slack` — *optional*. Required only if you want investigation results posted to Slack via `notify-investigation.sh --notify`.
+
+After siblings are configured, install this skill:
+
+```sh
+bin/install-symlinks.sh oncall-agent
+```
+
+The skill auto-activates when a prompt contains the literal header `# Freshdesk Ticket Context`, or when invoked manually as `/oncall <description-or-ticket-ref>`.
+
+Ready-to-run composite scripts:
+
+```sh
+oncall-agent/scripts/fetch-ticket-context.sh <ticket-id>
+oncall-agent/scripts/user-impersonation-lookup.sh --user-id <id>    # or --email
+oncall-agent/scripts/customer-state-snapshot.sh --company-id <id>
+```
+
+These delegate to `mysql/scripts/mysql_helper.py` and `freshdesk/scripts/freshdesk_helper.py`, so the table-name guardrail and the credential management stay in one place.
+
+The skill's `references/sql/` ships four parameterized SQL templates (`auth-user-by-id.sql`, `auth-user-by-email.sql`, `user-profile-across-companies.sql`, `company-overview.sql`) — broadly-applicable lookups distilled from past investigations. TZ domain constants (document type codes, the `expired=1` orphan marker, `IAP######` approval-id format, BINARY case-sensitive matching) are documented in `references/domain-constants.md`.
+
+### Roadmap — autonomous polling agent (future)
+
+The current orchestrator is **reactive**: it activates when a human pastes a `# Freshdesk Ticket Context` block or types `/oncall`. The long-term vision is an **autonomous polling agent** that watches Freshdesk for tech tickets, investigates each one via this skill, and notifies a developer in Slack — optionally raising a draft PR.
+
+Architecture is captured in `oncall-agent/references/polling-loop.md`. It is **not implemented in this PR**. Planned follow-ups:
+
+1. `oncall-poller/` skill — Python daemon (launchd / systemd / cron-driven) that polls Freshdesk, filters by group/tag, dedupes against state, invokes Claude headlessly, calls `notify-investigation.sh --notify`.
+2. Autonomous draft-PR raising — opt-in per-repo, draft-only, never auto-merge. Riskier; lands last.
 
 ## Agent Instructions
 
