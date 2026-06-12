@@ -332,6 +332,47 @@ These delegate to `mysql/scripts/mysql_helper.py` and `freshdesk/scripts/freshde
 
 The skill's `references/sql/` ships four parameterized SQL templates (`auth-user-by-id.sql`, `auth-user-by-email.sql`, `user-profile-across-companies.sql`, `company-overview.sql`) — broadly-applicable lookups distilled from past investigations. TZ domain constants (document type codes, the `expired=1` orphan marker, `IAP######` approval-id format, BINARY case-sensitive matching) are documented in `references/domain-constants.md`.
 
+## Sessions Digest (optional cron)
+
+A local launchd job that scans your Claude Code transcripts every 2 hours (06:00–22:00 local) and DMs you a Slack summary of what was being worked on across your projects. **macOS only** — uses `launchd`.
+
+### Requirements
+
+- `python3` on PATH (system or Homebrew)
+- The `slack/` skill installed and configured with a **bot token** (webhook can't DM you). See "Slack Skill Setup" above. The digest reads `~/.claude/skills/slack/scripts/.env`.
+
+To DM yourself, set `SLACK_DEFAULT_CHANNEL` in that `.env` to your Slack user id. Find it with:
+
+```sh
+python3 ~/.claude/skills/slack/scripts/slack_helper.py lookup-user you@example.com --pretty
+```
+
+### Install
+
+```sh
+bin/install-sessions-digest.sh             # writes plist, copies script, launchctl loads
+bin/install-sessions-digest.sh --dry-run   # preview without changes
+```
+
+Fires at 06, 08, 10, 12, 14, 16, 18, 20 and 22 local time. Empty digests are silently skipped, so you only get pinged when there was actually session activity.
+
+### Test manually
+
+```sh
+~/bin/recent-sessions-digest.py             # preview only (no Slack)
+~/bin/recent-sessions-digest.py --notify    # post once to Slack
+```
+
+### Logs
+
+`~/Library/Logs/sessions-digest.{log,err.log}`
+
+### Uninstall
+
+```sh
+bin/uninstall-sessions-digest.sh
+```
+
 ### Roadmap — autonomous polling agent (future)
 
 The current orchestrator is **reactive**: it activates when a human pastes a `# Freshdesk Ticket Context` block or types `/oncall`. The long-term vision is an **autonomous polling agent** that watches Freshdesk for tech tickets, investigates each one via this skill, and notifies a developer in Slack — optionally raising a draft PR.
