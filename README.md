@@ -332,45 +332,50 @@ These delegate to `mysql/scripts/mysql_helper.py` and `freshdesk/scripts/freshde
 
 The skill's `references/sql/` ships four parameterized SQL templates (`auth-user-by-id.sql`, `auth-user-by-email.sql`, `user-profile-across-companies.sql`, `company-overview.sql`) — broadly-applicable lookups distilled from past investigations. TZ domain constants (document type codes, the `expired=1` orphan marker, `IAP######` approval-id format, BINARY case-sensitive matching) are documented in `references/domain-constants.md`.
 
-## Sessions Digest (optional cron)
+## Sessions Digest (optional crons)
 
-A local launchd job that scans your Claude Code transcripts every 2 hours (06:00–22:00 local) and DMs you a Slack summary of what was being worked on across your projects. **macOS only** — uses `launchd`.
+Two local launchd jobs that read your Claude Code transcripts, ask Claude to summarize what you've been working on, and DM the summary to Slack. **macOS only** — uses `launchd`.
+
+| Job | When | What it sends |
+|-----|------|---------------|
+| `com.tranzact.sessions-digest` | every 2h, 06:00–22:00 local | 4–5 bullets of what you're actively working on (last 2h) |
+| `com.tranzact.sessions-scrum` | weekdays 10:00 local | standup-formatted summary (done / in progress / blockers) of the last ~72h |
+
+Both run `~/bin/claude-digest.py`, which: scans `~/.claude/projects/*/*.jsonl`, **redacts secret-looking strings** (Slack/GitHub/API tokens) before anything leaves the machine, pipes the activity to `claude --print --model claude-sonnet-4-6`, and posts the result via the `slack` skill.
 
 ### Requirements
 
-- `python3` on PATH (system or Homebrew)
-- The `slack/` skill installed and configured with a **bot token** (webhook can't DM you). See "Slack Skill Setup" above. The digest reads `~/.claude/skills/slack/scripts/.env`.
-
-To DM yourself, set `SLACK_DEFAULT_CHANNEL` in that `.env` to your Slack user id. Find it with:
-
-```sh
-python3 ~/.claude/skills/slack/scripts/slack_helper.py lookup-user you@example.com --pretty
-```
+- `python3` on PATH
+- The `claude` CLI (Claude Code) installed and logged in — the crons invoke it to summarize
+- The `slack/` skill configured with a **bot token** + `SLACK_DEFAULT_CHANNEL` (your Slack user id for a self-DM, or a channel). See "Slack Skill Setup" above. Delivery reads `~/.claude/skills/slack/scripts/.env`.
 
 ### Install
 
 ```sh
-bin/install-sessions-digest.sh             # writes plist, copies script, launchctl loads
+bin/install-sessions-digest.sh             # installs BOTH jobs
 bin/install-sessions-digest.sh --dry-run   # preview without changes
 ```
 
-Fires at 06, 08, 10, 12, 14, 16, 18, 20 and 22 local time. Empty digests are silently skipped, so you only get pinged when there was actually session activity.
+Empty windows are silently skipped (Claude isn't even called), so you only get pinged when there was real activity — and you don't pay for empty summaries.
 
 ### Test manually
 
 ```sh
-~/bin/recent-sessions-digest.py             # preview only (no Slack)
-~/bin/recent-sessions-digest.py --notify    # post once to Slack
+~/bin/claude-digest.py --mode recent --hours 2  --dry-run   # show the prompt, no Claude/Slack
+~/bin/claude-digest.py --mode recent --hours 2  --notify    # 2-hour digest → Slack
+~/bin/claude-digest.py --mode scrum  --hours 72 --notify    # scrum update → Slack
 ```
+
+`recent-sessions-digest.py` is also installed as a zero-cost (no-LLM) raw fallback if you ever want the plain transcript digest without a Claude call.
 
 ### Logs
 
-`~/Library/Logs/sessions-digest.{log,err.log}`
+`~/Library/Logs/sessions-digest.{log,err.log}` and `~/Library/Logs/sessions-scrum.{log,err.log}`
 
 ### Uninstall
 
 ```sh
-bin/uninstall-sessions-digest.sh
+bin/uninstall-sessions-digest.sh   # removes both jobs
 ```
 
 ### Roadmap — autonomous polling agent (future)

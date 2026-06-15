@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# uninstall-sessions-digest.sh — remove the sessions-digest launchd job.
+# uninstall-sessions-digest.sh — remove the session-digest launchd jobs.
 #
-# Unloads the launchd job and removes the plist. Leaves the script in ~/bin/
-# and any logs in ~/Library/Logs/ alone (delete those yourself if you want).
+# Unloads both jobs (sessions-digest + sessions-scrum) and removes their
+# plists. Leaves the scripts in ~/bin/ and any logs in ~/Library/Logs/ alone
+# (delete those yourself if you want).
 #
 # Usage:
 #   bin/uninstall-sessions-digest.sh
@@ -10,8 +11,8 @@
 
 set -euo pipefail
 
-PLIST_DST="${HOME}/Library/LaunchAgents/com.tranzact.sessions-digest.plist"
-LABEL="com.tranzact.sessions-digest"
+LA_DIR="${HOME}/Library/LaunchAgents"
+LABELS=(com.tranzact.sessions-digest com.tranzact.sessions-scrum)
 
 DRY=0
 for arg in "$@"; do
@@ -22,26 +23,39 @@ for arg in "$@"; do
     esac
 done
 
-if [[ ! -f $PLIST_DST ]] && ! launchctl list "$LABEL" >/dev/null 2>&1; then
-    echo "nothing to do: $LABEL not loaded, $PLIST_DST not present"
+did_anything=0
+for label in "${LABELS[@]}"; do
+    plist="${LA_DIR}/${label}.plist"
+    loaded=0
+    launchctl list "$label" >/dev/null 2>&1 && loaded=1
+
+    if [[ $loaded -eq 0 && ! -f $plist ]]; then
+        continue
+    fi
+    did_anything=1
+
+    if [[ $DRY -eq 1 ]]; then
+        echo "Would unload $label and remove $plist"
+        continue
+    fi
+
+    if [[ $loaded -eq 1 ]]; then
+        launchctl unload "$plist" 2>/dev/null || true
+        echo "ok: unloaded $label"
+    fi
+    if [[ -f $plist ]]; then
+        rm -f "$plist"
+        echo "ok: removed $plist"
+    fi
+done
+
+if [[ $did_anything -eq 0 ]]; then
+    echo "nothing to do: neither job is loaded or present"
     exit 0
 fi
 
-if [[ $DRY -eq 1 ]]; then
-    echo "Would unload $LABEL and remove $PLIST_DST"
-    exit 0
+if [[ $DRY -eq 0 ]]; then
+    echo
+    echo "Done. ~/bin/claude-digest.py, ~/bin/recent-sessions-digest.py and logs in"
+    echo "${HOME}/Library/Logs/ are left in place — remove them if desired."
 fi
-
-if launchctl list "$LABEL" >/dev/null 2>&1; then
-    launchctl unload "$PLIST_DST" 2>/dev/null || true
-    echo "ok: unloaded $LABEL"
-fi
-
-if [[ -f $PLIST_DST ]]; then
-    rm -f "$PLIST_DST"
-    echo "ok: removed $PLIST_DST"
-fi
-
-echo
-echo "Done. ${HOME}/bin/recent-sessions-digest.py and any logs in"
-echo "${HOME}/Library/Logs/ are left in place — remove them if desired."

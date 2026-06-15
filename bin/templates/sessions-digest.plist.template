@@ -5,17 +5,21 @@
     <key>Label</key>
     <string>com.tranzact.sessions-digest</string>
 
+    <!-- Every 2h, 06:00-22:00 local: Claude-summarized "what am I working on". -->
     <key>ProgramArguments</key>
     <array>
         <string>__PYTHON__</string>
-        <string>__HOME__/bin/recent-sessions-digest.py</string>
+        <string>__HOME__/bin/claude-digest.py</string>
+        <string>--mode</string>
+        <string>recent</string>
         <string>--hours</string>
         <string>2</string>
+        <string>--model</string>
+        <string>claude-sonnet-4-6</string>
         <string>--notify</string>
         <string>--quiet-if-empty</string>
     </array>
 
-    <!-- Fires at 06,08,10,12,14,16,18,20,22 local. Nine fires/day. -->
     <key>StartCalendarInterval</key>
     <array>
         <dict><key>Hour</key><integer>6</integer><key>Minute</key><integer>0</integer></dict>
@@ -40,7 +44,7 @@
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
         <key>HOME</key>
         <string>__HOME__</string>
     </dict>
