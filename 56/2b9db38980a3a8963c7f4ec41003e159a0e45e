@@ -1,0 +1,23 @@
+sdlc/workflows/sdlc-caller.yml
+  s_04581eb36c42a1::t_c3c363159026b3 1-52
+sdlc/workflows/sdlc-reusable.yml
+  s_04581eb36c42a1::t_8a12815b609066 1-38
+sdlc/workflows/DEPLOY.md
+  s_04581eb36c42a1::t_3f54ef3cbfa7ad 1-39
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.8",
+  "base_commit_sha": "562b9db38980a3a8963c7f4ec41003e159a0e45e",
+  "prompts": {},
+  "sessions": {
+    "s_04581eb36c42a1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9d33ec7d-0154-4196-ac07-c032c4c51674",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Suneet <suneet@MacBookAir.bbrouter>"
+    }
+  }
+}
