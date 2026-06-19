@@ -50,7 +50,10 @@ query($org:String!,$num:Int!){
         ... on ProjectV2SingleSelectField{ options{ id name } }
       } }
     }
-    issueFields(first:50){ nodes{ ... on IssueFieldSingleSelect{ id name options{ id name } } } }
+    issueFields(first:50){ nodes{
+      ... on IssueFieldSingleSelect{ id name options{ id name } }
+      ... on IssueFieldDate{ id name }
+    } }
     issueTypes(first:20){ nodes{ id name } }
   }
 }"""
@@ -69,7 +72,10 @@ def resolve_ids():
         out["project_fields"][f["name"]] = entry
     for f in d["issueFields"]["nodes"]:
         if f and f.get("name"):
-            out["org_fields"][f["name"]] = {"id": f["id"], "options": {o["name"]: o["id"] for o in f["options"]}}
+            entry = {"id": f["id"]}
+            if f.get("options"):
+                entry["options"] = {o["name"]: o["id"] for o in f["options"]}
+            out["org_fields"][f["name"]] = entry
     for t in d["issueTypes"]["nodes"]:
         out["issue_types"][t["name"]] = t["id"]
     return out
@@ -105,9 +111,9 @@ mutation($p:ID!,$i:ID!,$f:ID!,$o:String!){
   updateProjectV2ItemFieldValue(input:{projectId:$p,itemId:$i,fieldId:$f,value:{singleSelectOptionId:$o}}){projectV2Item{id}}
 }"""
 
-PROJECT_DATE_MUT = """
-mutation($p:ID!,$i:ID!,$f:ID!,$d:Date!){
-  updateProjectV2ItemFieldValue(input:{projectId:$p,itemId:$i,fieldId:$f,value:{date:$d}}){projectV2Item{id}}
+ORG_DATE_MUT = """
+mutation($iss:ID!,$f:ID!,$d:String!){
+  setIssueFieldValue(input:{issueId:$iss, issueFields:[{fieldId:$f, dateValue:$d}]}){clientMutationId}
 }"""
 
 ADD_ITEM_MUT = """
@@ -234,12 +240,12 @@ def cmd_start(a):
     node, item = _pm_item_id(a.pm, ids)
     set_project_field(item, ids, "Status", "WIP")
     today = datetime.date.today().isoformat()
-    ds = ids["project_fields"].get("Dev Start")
-    if ds and ds.get("dataType") == "DATE":
-        gql(PROJECT_DATE_MUT, p=ids["project_id"], i=item, f=ds["id"], d=today)
+    ds = ids["org_fields"].get("Dev Start")
+    if ds:
+        gql(ORG_DATE_MUT, iss=node, f=ds["id"], d=today)
         ds_msg = f", Dev Start={today}"
     else:
-        ds_msg = " (Dev Start not a project date field — skipped)"
+        ds_msg = " (Dev Start field not found — skipped)"
     me = gh(["api", "user", "--jq", ".login"]).strip()
     gh(["issue", "edit", str(a.pm), "-R", PM, "--add-assignee", me])
     print(f"started {PM}#{a.pm}: Status=WIP{ds_msg}, assignee={me}")

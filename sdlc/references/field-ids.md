@@ -149,6 +149,12 @@
     }
   },
   "org_fields": {
+    "Dev Start": {
+      "id": "IFD_kgDOAPvaGA"
+    },
+    "Due Date": {
+      "id": "IFD_kgDOAPvaGQ"
+    },
     "Story Points": {
       "id": "IFSS_kgDOAPvaGg",
       "options": {
@@ -167,6 +173,27 @@
         "Low": "IFSSO_kgDOAbiojg"
       }
     },
+    "Dev End - Actual": {
+      "id": "IFD_kgDOApWRFA"
+    },
+    "Dev End - Expected": {
+      "id": "IFD_kgDOApWREw"
+    },
+    "QA End - Actual": {
+      "id": "IFD_kgDOApWRFw"
+    },
+    "QA End - Expected": {
+      "id": "IFD_kgDOApWRFg"
+    },
+    "QA Start": {
+      "id": "IFD_kgDOApWRFQ"
+    },
+    "Release Actual": {
+      "id": "IFD_kgDOApWRGw"
+    },
+    "Release Expected": {
+      "id": "IFD_kgDOApWRGg"
+    },
     "Release Stage": {
       "id": "IFSS_kgDOApWREg",
       "options": {
@@ -184,6 +211,12 @@
         "production-bug": "IFSSO_kgDOBIXChA",
         "suggestion": "IFSSO_kgDOBIXChQ"
       }
+    },
+    "UAT End": {
+      "id": "IFD_kgDOApWRGQ"
+    },
+    "UAT Start": {
+      "id": "IFD_kgDOApWRGA"
     }
   },
   "issue_types": {
