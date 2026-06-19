@@ -1,0 +1,21 @@
+sdlc/tests/test_sdlc_core.py
+  s_04581eb36c42a1::t_c99e8b1d432ff4 1-62
+sdlc/scripts/sdlc_core.py
+  s_04581eb36c42a1::t_ce3697ba6a44ce 1-60
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.8",
+  "base_commit_sha": "8e5f154f1ce2e251c18fada9804b65417931a5a1",
+  "prompts": {},
+  "sessions": {
+    "s_04581eb36c42a1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9d33ec7d-0154-4196-ac07-c032c4c51674",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Suneet <suneet@MacBookAir.bbrouter>"
+    }
+  }
+}
