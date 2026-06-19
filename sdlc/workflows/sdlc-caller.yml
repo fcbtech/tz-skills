@@ -1,0 +1,52 @@
+# DEPLOY TO: <each implementation repo>/.github/workflows/sdlc.yml
+# Thin caller that forwards PR / merge / deploy events to fcbtech/pm's sdlc-reusable workflow.
+# Requires the org Actions secret SDLC_PROJECT_TOKEN (see DEPLOY.md).
+name: sdlc
+on:
+  pull_request:
+    types: [opened, ready_for_review, review_requested, closed]
+  pull_request_review:
+    types: [submitted]
+  push:
+    branches: [canary, main]
+jobs:
+  pr:
+    if: ${{ github.event_name == 'pull_request' && github.event.action != 'closed' }}
+    uses: fcbtech/pm/.github/workflows/sdlc-reusable.yml@main
+    with:
+      op: on-pr
+      repo: ${{ github.event.repository.name }}
+      pr: ${{ github.event.pull_request.number }}
+      event: ${{ github.event.action }}
+    secrets:
+      token: ${{ secrets.SDLC_PROJECT_TOKEN }}
+  review:
+    if: ${{ github.event_name == 'pull_request_review' && github.event.review.state != 'commented' }}
+    uses: fcbtech/pm/.github/workflows/sdlc-reusable.yml@main
+    with:
+      op: on-pr
+      repo: ${{ github.event.repository.name }}
+      pr: ${{ github.event.pull_request.number }}
+      event: ${{ github.event.review.state }}
+    secrets:
+      token: ${{ secrets.SDLC_PROJECT_TOKEN }}
+  merged:
+    if: ${{ github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == true }}
+    uses: fcbtech/pm/.github/workflows/sdlc-reusable.yml@main
+    with:
+      op: on-merge
+      repo: ${{ github.event.repository.name }}
+      pr: ${{ github.event.pull_request.number }}
+    secrets:
+      token: ${{ secrets.SDLC_PROJECT_TOKEN }}
+  deploy:
+    if: ${{ github.event_name == 'push' }}
+    uses: fcbtech/pm/.github/workflows/sdlc-reusable.yml@main
+    with:
+      op: on-deploy
+      repo: ${{ github.event.repository.name }}
+      branch: ${{ github.ref_name }}
+      before: ${{ github.event.before }}
+      after: ${{ github.event.after }}
+    secrets:
+      token: ${{ secrets.SDLC_PROJECT_TOKEN }}

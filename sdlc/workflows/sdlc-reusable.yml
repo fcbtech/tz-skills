@@ -1,0 +1,38 @@
+# DEPLOY TO: fcbtech/pm/.github/workflows/sdlc-reusable.yml
+# Reusable hub workflow for the SDLC Actions companion. Called by each impl repo's
+# .github/workflows/sdlc.yml (see sdlc-caller.yml). Runs the sdlc skill helper.
+name: sdlc-reusable
+on:
+  workflow_call:
+    inputs:
+      op:     { required: true,  type: string }
+      repo:   { required: true,  type: string }
+      pr:     { required: false, type: string }
+      event:  { required: false, type: string }
+      branch: { required: false, type: string }
+      before: { required: false, type: string }
+      after:  { required: false, type: string }
+    secrets:
+      token:  { required: true }
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { repository: fcbtech/tz-skills, ref: main, path: tz-skills }
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+      - name: run sdlc op
+        working-directory: tz-skills/sdlc
+        env:
+          GH_TOKEN: ${{ secrets.token }}
+        run: |
+          set -euo pipefail
+          python scripts/sdlc_helper.py sync-fields
+          case "${{ inputs.op }}" in
+            on-pr)      python scripts/sdlc_helper.py on-pr --repo "${{ inputs.repo }}" --pr "${{ inputs.pr }}" --event "${{ inputs.event }}" ;;
+            on-merge)   python scripts/sdlc_helper.py on-merge --repo "${{ inputs.repo }}" --pr "${{ inputs.pr }}" ;;
+            on-deploy)  python scripts/sdlc_helper.py on-deploy --repo "${{ inputs.repo }}" --branch "${{ inputs.branch }}" --before "${{ inputs.before }}" --after "${{ inputs.after }}" ;;
+            check-link) python scripts/sdlc_helper.py check-pr-link --repo "${{ inputs.repo }}" --pr "${{ inputs.pr }}" ;;
+            *) echo "unknown op ${{ inputs.op }}"; exit 1 ;;
+          esac
