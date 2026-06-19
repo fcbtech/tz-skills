@@ -273,6 +273,99 @@ def cmd_ready(a):
     print(f"{a.repo}#{a.pr} ready; {PM}#{a.pm} Review State=In Review")
 
 
+# ---------------------------------------------------------------- event handlers (Actions)
+
+def _pr_body(repo, pr):
+    return gh(["pr", "view", str(pr), "-R", f"{ORG}/{repo}", "--json", "body", "--jq", ".body"], check=False)
+
+
+def _pr_url(repo, pr):
+    return gh(["pr", "view", str(pr), "-R", f"{ORG}/{repo}", "--json", "url", "--jq", ".url"], check=False).strip()
+
+
+ISSUE_INFO_Q = """
+query($id:ID!){ node(id:$id){ ... on Issue{
+  issueType{ name }
+  issueFieldValues(first:20){ nodes{ __typename
+    ... on IssueFieldSingleSelectValue{ name field{ ... on IssueFieldSingleSelect{ name } } } } }
+}}}"""
+
+
+def _issue_info(node):
+    d = gql(ISSUE_INFO_Q, id=node)["data"]["node"]
+    itype = (d.get("issueType") or {}).get("name")
+    subtype = None
+    for v in d["issueFieldValues"]["nodes"]:
+        if v.get("__typename") == "IssueFieldSingleSelectValue" and v["field"].get("name") == "Subtype":
+            subtype = v["name"]
+    return itype, subtype
+
+
+def cmd_on_pr(a):
+    ids = load_ids()
+    pm = sdlc_core.parse_pm_ref(_pr_body(a.repo, a.pr))
+    if not pm:
+        print(f"{a.repo}#{a.pr}: no fcbtech/pm ref — skipping")
+        return
+    state = sdlc_core.review_state_for_event(a.event)
+    if not state:
+        print(f"event '{a.event}' has no Review State mapping — skipping")
+        return
+    _node, item = _pm_item_id(pm, ids)
+    set_project_field(item, ids, "Status", "WIP")
+    set_project_field(item, ids, "Review State", state)
+    print(f"pm#{pm}: Status=WIP, Review State={state}")
+
+
+def cmd_check_pr_link(a):
+    pm = sdlc_core.parse_pm_ref(_pr_body(a.repo, a.pr))
+    if not pm:
+        sys.exit(f"FAIL: {a.repo}#{a.pr} must reference fcbtech/pm#N in its description")
+    exists = gh(["api", f"repos/{PM}/issues/{pm}", "--jq", ".number"], check=False).strip()
+    if not exists:
+        sys.exit(f"FAIL: fcbtech/pm#{pm} referenced by {a.repo}#{a.pr} does not exist")
+    url = _pr_url(a.repo, a.pr)
+    existing = gh(["issue", "view", str(pm), "-R", PM, "--json", "comments", "--jq", ".comments[].body"], check=False)
+    if url and url not in existing:
+        gh(["issue", "comment", str(pm), "-R", PM, "--body", f"Implementation PR: {url}"])
+    print(f"OK: {a.repo}#{a.pr} -> fcbtech/pm#{pm}")
+
+
+def cmd_on_merge(a):
+    ids = load_ids()
+    pm = sdlc_core.parse_pm_ref(_pr_body(a.repo, a.pr))
+    if not pm:
+        print(f"{a.repo}#{a.pr}: no fcbtech/pm ref — skipping")
+        return
+    node, item = _pm_item_id(pm, ids)
+    set_project_field(item, ids, "Review State", "Merged")
+    itype, subtype = _issue_info(node)
+    updates = sdlc_core.merge_transition(itype, subtype)
+    for field, value in updates.items():
+        set_project_field(item, ids, field, value)
+    print(f"pm#{pm} ({itype}/{subtype}) merged: Review State=Merged {updates}")
+
+
+def cmd_on_deploy(a):
+    ids = load_ids()
+    stage = sdlc_core.release_stage_for_branch(a.branch)
+    if not stage:
+        print(f"branch '{a.branch}' is not a release branch — skipping")
+        return
+    cmp = json.loads(gh(["api", f"repos/{ORG}/{a.repo}/compare/{a.before}...{a.after}"], check=False) or "{}")
+    msgs = [c["commit"]["message"] for c in cmp.get("commits", [])]
+    prs = sdlc_core.extract_pr_numbers(msgs)
+    pm_nums = set()
+    for pr in prs:
+        pm = sdlc_core.parse_pm_ref(_pr_body(a.repo, pr))
+        if pm:
+            pm_nums.add(pm)
+    for pm in sorted(pm_nums):
+        node, _item = _pm_item_id(pm, ids)
+        set_org_field(node, ids, "Release Stage", stage)
+    print(f"deploy {a.repo}@{a.branch}: set Release Stage={stage} on pm {sorted(pm_nums) or '[]'}")
+
+
 # ---------------------------------------------------------------- CLI
 
 def build_parser():
@@ -324,6 +417,29 @@ def build_parser():
     r.add_argument("pm", type=int)
     r.add_argument("--repo", required=True)
     r.add_argument("pr", type=int)
+
+    op = sub.add_parser("on-pr")
+    op.set_defaults(func=cmd_on_pr)
+    op.add_argument("--repo", required=True)
+    op.add_argument("--pr", required=True)
+    op.add_argument("--event", required=True)
+
+    cl = sub.add_parser("check-pr-link")
+    cl.set_defaults(func=cmd_check_pr_link)
+    cl.add_argument("--repo", required=True)
+    cl.add_argument("--pr", required=True)
+
+    om = sub.add_parser("on-merge")
+    om.set_defaults(func=cmd_on_merge)
+    om.add_argument("--repo", required=True)
+    om.add_argument("--pr", required=True)
+
+    od = sub.add_parser("on-deploy")
+    od.set_defaults(func=cmd_on_deploy)
+    od.add_argument("--repo", required=True)
+    od.add_argument("--branch", required=True)
+    od.add_argument("--before", required=True)
+    od.add_argument("--after", required=True)
 
     return p
 

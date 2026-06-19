@@ -58,3 +58,25 @@ def feature_branch(epic_slug, task_slug):
     def slug(s):
         return re.sub(r"[^a-z0-9]+", "-", s.strip().lower()).strip("-")
     return f"epic-{slug(epic_slug)}/{slug(task_slug)}"
+
+
+def extract_pr_numbers(messages):
+    """All #N PR numbers found in a list of commit messages, sorted & deduped."""
+    nums = set()
+    for m in messages or []:
+        nums.update(int(n) for n in re.findall(r"#(\d+)", m))
+    return sorted(nums)
+
+
+def merge_transition(issue_type, subtype):
+    """Field updates (beyond Review State=Merged) to apply when a PR merges."""
+    if issue_type == "task" and subtype == "dev":
+        return {"Status": "Done"}
+    if issue_type == "bug":
+        return {"QA State": "Ready for QA"}
+    return {}
+
+
+def release_stage_for_branch(branch):
+    """Release Stage implied by a deploy to a long-lived branch, or None."""
+    return {"canary": "In Canary", "main": "In Prod"}.get(branch)

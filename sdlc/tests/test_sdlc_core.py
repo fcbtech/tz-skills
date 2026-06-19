@@ -60,3 +60,24 @@ def test_has_investment_prefix():
 def test_feature_branch():
     assert sdlc_core.feature_branch("inventory", "batch tracking DB") == "epic-inventory/batch-tracking-db"
     assert sdlc_core.feature_branch("Inventory", "API_work") == "epic-inventory/api-work"
+
+
+def test_extract_pr_numbers():
+    msgs = ["Merge pull request #12 from x", "feat: thing (#34)", "no pr here", "dup (#12)"]
+    assert sdlc_core.extract_pr_numbers(msgs) == [12, 34]
+    assert sdlc_core.extract_pr_numbers([]) == []
+    assert sdlc_core.extract_pr_numbers(None) == []
+
+
+def test_merge_transition():
+    assert sdlc_core.merge_transition("task", "dev") == {"Status": "Done"}
+    assert sdlc_core.merge_transition("bug", "qa-bug") == {"QA State": "Ready for QA"}
+    assert sdlc_core.merge_transition("bug", "production-bug") == {"QA State": "Ready for QA"}
+    assert sdlc_core.merge_transition("task", "qa") == {}
+    assert sdlc_core.merge_transition("epic", None) == {}
+
+
+def test_release_stage_for_branch():
+    assert sdlc_core.release_stage_for_branch("canary") == "In Canary"
+    assert sdlc_core.release_stage_for_branch("main") == "In Prod"
+    assert sdlc_core.release_stage_for_branch("develop") is None
