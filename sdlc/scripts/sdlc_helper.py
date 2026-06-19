@@ -352,7 +352,8 @@ def cmd_on_deploy(a):
     if not stage:
         print(f"branch '{a.branch}' is not a release branch — skipping")
         return
-    cmp = json.loads(gh(["api", f"repos/{ORG}/{a.repo}/compare/{a.before}...{a.after}"], check=False) or "{}")
+    before = a.before or gh(["api", f"repos/{ORG}/{a.repo}/commits/{a.after}", "--jq", ".parents[0].sha"], check=False).strip()
+    cmp = json.loads(gh(["api", f"repos/{ORG}/{a.repo}/compare/{before}...{a.after}"], check=False) or "{}")
     msgs = [c["commit"]["message"] for c in cmp.get("commits", [])]
     prs = sdlc_core.extract_pr_numbers(msgs)
     pm_nums = set()
@@ -438,7 +439,7 @@ def build_parser():
     od.set_defaults(func=cmd_on_deploy)
     od.add_argument("--repo", required=True)
     od.add_argument("--branch", required=True)
-    od.add_argument("--before", required=True)
+    od.add_argument("--before", default="")
     od.add_argument("--after", required=True)
 
     return p

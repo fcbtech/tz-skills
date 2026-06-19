@@ -1,14 +1,21 @@
 # DEPLOY TO: <each implementation repo>/.github/workflows/sdlc.yml
 # Thin caller that forwards PR / merge / deploy events to fcbtech/pm's sdlc-reusable workflow.
 # Requires the org Actions secret SDLC_PROJECT_TOKEN (see DEPLOY.md).
+#
+# The `deploy` job fires on SUCCESSFUL completion of this repo's deploy workflows
+# (workflow_run). Replace the workflow names below with THIS repo's deploy workflow
+# `name:` values. The example names are tranzact-v2's:
+#   - "Deploy Backend (Canary) to EC2"  (push -> canary)
+#   - "Deploy Backend (Stable) to EC2"  (push -> main)
 name: sdlc
 on:
   pull_request:
     types: [opened, ready_for_review, review_requested, closed]
   pull_request_review:
     types: [submitted]
-  push:
-    branches: [canary, main]
+  workflow_run:
+    workflows: ["Deploy Backend (Canary) to EC2", "Deploy Backend (Stable) to EC2"]
+    types: [completed]
 jobs:
   pr:
     if: ${{ github.event_name == 'pull_request' && github.event.action != 'closed' }}
@@ -40,13 +47,12 @@ jobs:
     secrets:
       token: ${{ secrets.SDLC_PROJECT_TOKEN }}
   deploy:
-    if: ${{ github.event_name == 'push' }}
+    if: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' }}
     uses: fcbtech/pm/.github/workflows/sdlc-reusable.yml@main
     with:
       op: on-deploy
       repo: ${{ github.event.repository.name }}
-      branch: ${{ github.ref_name }}
-      before: ${{ github.event.before }}
-      after: ${{ github.event.after }}
+      branch: ${{ github.event.workflow_run.head_branch }}
+      after: ${{ github.event.workflow_run.head_sha }}
     secrets:
       token: ${{ secrets.SDLC_PROJECT_TOKEN }}
