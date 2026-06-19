@@ -1,0 +1,19 @@
+sdlc/SKILL.md
+  s_04581eb36c42a1::t_f8dc93764a0ecb 1-44
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.8",
+  "base_commit_sha": "3bf2f572a038d26c9162ae38e3661eb365bba75d",
+  "prompts": {},
+  "sessions": {
+    "s_04581eb36c42a1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9d33ec7d-0154-4196-ac07-c032c4c51674",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Suneet <suneet@MacBookAir.bbrouter>"
+    }
+  }
+}
