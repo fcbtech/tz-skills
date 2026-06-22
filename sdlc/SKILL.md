@@ -34,6 +34,7 @@ ready  <pm#> --repo R <pr#>                              # PR ready -> Review St
 
 ## Rules the agent must enforce
 
+- When the user names a parent epic for a task or bug — in any phrasing (`for epic #N`, `sub-issue of #N`, `under #N`, `child of #N`, `belongs to epic #N`, etc.) — pass `--epic N` to `create-task` / `create-bug`. **Do not** put `Parent: #N` (or any parent reference) into `--body`: a body string only produces a cross-reference event, not a sub-issue link. `--epic` is what invokes the GitHub `sub_issues` API and creates the real parent/child relationship the board reads.
 - PR titles start with an investment prefix (`feat:`/`fix:`/`chore:`/`dx:`/`perf:`/`refactor:`/`debt:`/`infra:`/`sec:`/`docs:`/`test:`/`ci:`/`automation:`/`maint:`).
 - `task` Subtype is `dev` or `qa`; `bug` Subtype is `qa-bug`/`production-bug`/`suggestion`; `epic` has no subtype.
 - Feature branches: `epic-<epic-slug>/<task-slug>`, branched off the epic branch.
