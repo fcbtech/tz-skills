@@ -332,6 +332,56 @@ These delegate to `mysql/scripts/mysql_helper.py` and `freshdesk/scripts/freshde
 
 The skill's `references/sql/` ships four parameterized SQL templates (`auth-user-by-id.sql`, `auth-user-by-email.sql`, `user-profile-across-companies.sql`, `company-overview.sql`) — broadly-applicable lookups distilled from past investigations. TZ domain constants (document type codes, the `expired=1` orphan marker, `IAP######` approval-id format, BINARY case-sensitive matching) are documented in `references/domain-constants.md`.
 
+## Sessions Digest (optional crons)
+
+Two local launchd jobs that read your Claude Code transcripts, ask Claude to summarize what you've been working on, and DM the summary to Slack. **macOS only** — uses `launchd`.
+
+| Job | When | What it sends |
+|-----|------|---------------|
+| `com.tranzact.sessions-digest` | every 2h, 08:00–20:00 local | **incremental** — tight one-sentence bullets (≤25 words) of what was *achieved* in the last 2h, each tagged `repo · branch · PR` |
+| `com.tranzact.sessions-scrum` | weekdays 09:55 local | a standup (done / in progress / blockers) built by **aggregating that day's stored 2h updates** (yesterday + today so far; Mon reaches back to Fri) |
+
+Both run `~/bin/claude-digest.py`, which: scans `~/.claude/projects/*/*.jsonl`, **redacts secret-looking strings** (Slack/GitHub/API tokens) before anything leaves the machine, asks `claude --print --model claude-sonnet-4-6` for **structured JSON**, and posts a **Slack Block Kit** message (header + per-item section + muted `📦 repo · 🌿 branch · 🔀 PR` context line) via the `slack` skill. If the JSON ever fails to parse, it degrades to plain text so delivery never breaks.
+
+**Incremental windowing.** The 2h digest filters by each message's `timestamp`, so a session running across several windows only contributes its *newly-added* messages each time — no re-summarizing old work. The summarizer sees both your prompts **and** Claude's responses (insight blocks + meaningful conclusions), so bullets reflect what was actually *done*, not just what you asked. `repo`/`branch` come from the transcript's per-line `cwd`/`gitBranch`; PRs from `/pull/NNNN` and `PR #NNNN` mentions.
+
+**History store.** Each 2h run appends its structured items to `~/.tz-oncall/digest-history/YYYY-MM-DD.jsonl`. The weekday scrum reads those entries for its window and synthesizes them — a summary-of-summaries that's tight and cheap. If the store is empty for the window (e.g. day one), the scrum falls back to re-reading the raw transcripts. Daily files older than 7 days are auto-pruned on each run.
+
+### Requirements
+
+- `python3` on PATH
+- The `claude` CLI (Claude Code) installed and logged in — the crons invoke it to summarize
+- The `slack/` skill configured with a **bot token** + `SLACK_DEFAULT_CHANNEL` (your Slack user id for a self-DM, or a channel). See "Slack Skill Setup" above. Delivery reads `~/.claude/skills/slack/scripts/.env`.
+
+### Install
+
+```sh
+bin/install-sessions-digest.sh             # installs BOTH jobs
+bin/install-sessions-digest.sh --dry-run   # preview without changes
+```
+
+Empty windows are silently skipped (Claude isn't even called), so you only get pinged when there was real activity — and you don't pay for empty summaries.
+
+### Test manually
+
+```sh
+~/bin/claude-digest.py --mode recent --hours 2 --dry-run   # show the prompt, no Claude/Slack
+~/bin/claude-digest.py --mode recent --hours 2 --notify    # incremental 2-hour digest → Slack
+~/bin/claude-digest.py --mode scrum            --notify    # standup (computes its own window) → Slack
+```
+
+`recent-sessions-digest.py` is also installed as a zero-cost (no-LLM) raw fallback if you ever want the plain transcript digest without a Claude call.
+
+### Logs
+
+`~/Library/Logs/sessions-digest.{log,err.log}` and `~/Library/Logs/sessions-scrum.{log,err.log}`
+
+### Uninstall
+
+```sh
+bin/uninstall-sessions-digest.sh   # removes both jobs
+```
+
 ### Roadmap — autonomous polling agent (future)
 
 The current orchestrator is **reactive**: it activates when a human pastes a `# Freshdesk Ticket Context` block or types `/oncall`. The long-term vision is an **autonomous polling agent** that watches Freshdesk for tech tickets, investigates each one via this skill, and notifies a developer in Slack — optionally raising a draft PR.
