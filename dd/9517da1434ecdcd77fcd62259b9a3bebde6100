@@ -1,0 +1,19 @@
+sdlc/SKILL.md
+  s_ba69c0eb0a6aa6::t_9e3b60711421dd 37
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.9",
+  "base_commit_sha": "dd9517da1434ecdcd77fcd62259b9a3bebde6100",
+  "prompts": {},
+  "sessions": {
+    "s_ba69c0eb0a6aa6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b6079b92-5cb5-4f4b-8e0a-2156d0babbff",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Suneet Choudhary <suneet@letstranzact.com>"
+    }
+  }
+}
