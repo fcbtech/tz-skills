@@ -338,10 +338,14 @@ Two local launchd jobs that read your Claude Code transcripts, ask Claude to sum
 
 | Job | When | What it sends |
 |-----|------|---------------|
-| `com.tranzact.sessions-digest` | every 2h, 06:00–22:00 local | 4–5 bullets of what you're actively working on (last 2h) |
-| `com.tranzact.sessions-scrum` | weekdays 10:00 local | standup-formatted summary (done / in progress / blockers) of the last ~72h |
+| `com.tranzact.sessions-digest` | every 2h, 08:00–20:00 local | **incremental** — tight one-sentence bullets (≤25 words) of what was *achieved* in the last 2h, each tagged `repo · branch · PR` |
+| `com.tranzact.sessions-scrum` | weekdays 09:55 local | a standup (done / in progress / blockers) built by **aggregating that day's stored 2h updates** (yesterday + today so far; Mon reaches back to Fri) |
 
-Both run `~/bin/claude-digest.py`, which: scans `~/.claude/projects/*/*.jsonl`, **redacts secret-looking strings** (Slack/GitHub/API tokens) before anything leaves the machine, pipes the activity to `claude --print --model claude-sonnet-4-6`, and posts the result via the `slack` skill.
+Both run `~/bin/claude-digest.py`, which: scans `~/.claude/projects/*/*.jsonl`, **redacts secret-looking strings** (Slack/GitHub/API tokens) before anything leaves the machine, asks `claude --print --model claude-sonnet-4-6` for **structured JSON**, and posts a **Slack Block Kit** message (header + per-item section + muted `📦 repo · 🌿 branch · 🔀 PR` context line) via the `slack` skill. If the JSON ever fails to parse, it degrades to plain text so delivery never breaks.
+
+**Incremental windowing.** The 2h digest filters by each message's `timestamp`, so a session running across several windows only contributes its *newly-added* messages each time — no re-summarizing old work. The summarizer sees both your prompts **and** Claude's responses (insight blocks + meaningful conclusions), so bullets reflect what was actually *done*, not just what you asked. `repo`/`branch` come from the transcript's per-line `cwd`/`gitBranch`; PRs from `/pull/NNNN` and `PR #NNNN` mentions.
+
+**History store.** Each 2h run appends its structured items to `~/.tz-oncall/digest-history/YYYY-MM-DD.jsonl`. The weekday scrum reads those entries for its window and synthesizes them — a summary-of-summaries that's tight and cheap. If the store is empty for the window (e.g. day one), the scrum falls back to re-reading the raw transcripts. Daily files older than 7 days are auto-pruned on each run.
 
 ### Requirements
 
@@ -361,9 +365,9 @@ Empty windows are silently skipped (Claude isn't even called), so you only get p
 ### Test manually
 
 ```sh
-~/bin/claude-digest.py --mode recent --hours 2  --dry-run   # show the prompt, no Claude/Slack
-~/bin/claude-digest.py --mode recent --hours 2  --notify    # 2-hour digest → Slack
-~/bin/claude-digest.py --mode scrum  --hours 72 --notify    # scrum update → Slack
+~/bin/claude-digest.py --mode recent --hours 2 --dry-run   # show the prompt, no Claude/Slack
+~/bin/claude-digest.py --mode recent --hours 2 --notify    # incremental 2-hour digest → Slack
+~/bin/claude-digest.py --mode scrum            --notify    # standup (computes its own window) → Slack
 ```
 
 `recent-sessions-digest.py` is also installed as a zero-cost (no-LLM) raw fallback if you ever want the plain transcript digest without a Claude call.

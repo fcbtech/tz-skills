@@ -2,23 +2,27 @@
 """
 claude-digest.py
 
-Reads your recent Claude Code session activity, asks Claude (headless
-`claude --print`) to summarize it, and posts the summary to Slack via the
-local slack skill helper.
+Incremental, Claude-summarized work log from your Claude Code sessions.
 
-Two modes:
-  --mode recent  → 4-5 bullets of "what am I actively working on" (for the
-                   every-2-hours ping).
-  --mode scrum   → a standup-formatted update (done / in progress / blockers)
-                   for the weekday-morning daily scrum.
+modes:
+  recent  → covers ONLY the last N hours (per-message timestamp window, so a
+            long-running session contributes only its newly-added messages).
+            Emits tight 1-2 line bullets of what was *achieved*, each tagged
+            with repo / branch / PR. Each run is appended to a daily history
+            store so the scrum can aggregate it later.
+  scrum   → weekday standup. Aggregates the history entries logged across
+            "yesterday + today so far" (Mon reaches back to Fri) into a
+            standup. Falls back to re-reading transcripts if the store is empty.
+
+Input to the summarizer = your prompts + Claude's responses (insight blocks and
+other meaningful text), all secret-redacted before anything leaves the machine.
 
 Usage:
     claude-digest.py --mode recent --hours 2  --notify
-    claude-digest.py --mode scrum  --hours 72 --notify --channel "U0AK4AM68A3"
-    claude-digest.py --mode recent --hours 2  --dry-run   # show prompt, don't call Claude/Slack
+    claude-digest.py --mode scrum             --notify
+    claude-digest.py --mode recent --hours 2  --dry-run     # show the prompt only
 
-Exit codes:
-    0 OK; 2 nothing to summarize; 3 Slack post failed; 4 Claude call failed.
+Exit codes: 0 OK; 2 nothing to report; 3 Slack post failed; 4 Claude call failed.
 """
 
 from __future__ import annotations
@@ -29,13 +33,30 @@ import re
 import shutil
 import subprocess
 import sys
-import time
-from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-# Redact secret-looking strings before any transcript text leaves the machine
-# (it gets sent to Claude and may be echoed into Slack). Prefix-anchored so we
-# don't over-redact ordinary text.
+PROJECTS_DIR = Path.home() / ".claude" / "projects"
+HISTORY_DIR = Path.home() / ".tz-oncall" / "digest-history"
+SLACK_HELPER_CANDIDATES = [Path.home() / ".claude" / "skills" / "slack" / "scripts" / "slack_helper.py"]
+CLAUDE_BIN_CANDIDATES = [
+    Path.home() / ".local" / "bin" / "claude",
+    Path("/opt/homebrew/bin/claude"),
+    Path("/usr/local/bin/claude"),
+]
+
+USER_MSG_TRUNCATE = 240
+ASST_SNIPPET_TRUNCATE = 500
+MAX_USER_MSGS = 25
+MAX_ASST_SNIPPETS = 15
+MAX_SESSIONS = 20
+CLAUDE_TIMEOUT_SECONDS = 180
+
+# Only count high-confidence PR refs: /pull/NNNN URLs or an explicit "PR #NNNN".
+# A bare "#33" is too ambiguous (often a board/issue ticket) to treat as a PR.
+PR_RE = re.compile(r"(?:/pull/(\d{2,6})\b|\bPR\s*#?(\d{2,6})\b|\bpull request\s*#?(\d{2,6})\b)", re.IGNORECASE)
+INSIGHT_RE = re.compile(r"★\s*Insight.*?─{5,}.*?\n(.*?)\n[^\n]*─{5,}", re.DOTALL)
+
 _SECRET_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"xox[baprs]-[A-Za-z0-9-]{8,}"), "[REDACTED:slack-token]"),
     (re.compile(r"xapp-[A-Za-z0-9-]{8,}"), "[REDACTED:slack-app-token]"),
@@ -48,54 +69,10 @@ _SECRET_PATTERNS: list[tuple[re.Pattern[str], str]] = [
 ]
 
 
-def redact_secrets(text: str) -> str:
-    for pattern, replacement in _SECRET_PATTERNS:
-        text = pattern.sub(replacement, text)
+def redact(text: str) -> str:
+    for pattern, repl in _SECRET_PATTERNS:
+        text = pattern.sub(repl, text)
     return text
-
-PROJECTS_DIR = Path.home() / ".claude" / "projects"
-SLACK_HELPER_CANDIDATES = [
-    Path.home() / ".claude" / "skills" / "slack" / "scripts" / "slack_helper.py",
-]
-CLAUDE_BIN_CANDIDATES = [
-    Path.home() / ".local" / "bin" / "claude",
-    Path("/opt/homebrew/bin/claude"),
-    Path("/usr/local/bin/claude"),
-]
-
-# Context-shaping caps (keep the prompt bounded regardless of how busy you were).
-MSG_TRUNCATE = 220          # max chars per user message
-MAX_MSGS_PER_SESSION = 20
-MAX_SESSIONS_PER_PROJECT = 6
-MAX_PROJECTS = 12
-CLAUDE_TIMEOUT_SECONDS = 180
-
-
-# ---------------------------------------------------------------- transcripts
-
-
-def find_recent_transcripts(hours: float) -> list[Path]:
-    cutoff = time.time() - hours * 3600
-    if not PROJECTS_DIR.exists():
-        return []
-    out: list[Path] = []
-    for path in PROJECTS_DIR.glob("*/*.jsonl"):
-        try:
-            if path.stat().st_mtime >= cutoff:
-                out.append(path)
-        except OSError:
-            continue
-    out.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-    return out
-
-
-def project_label(path: Path) -> str:
-    raw = path.parent.name
-    label = raw.lstrip("-").replace("-", "/")
-    parts = label.split("/")
-    if len(parts) > 3:
-        label = ".../" + "/".join(parts[-3:])
-    return label
 
 
 def truncate(s: str, n: int) -> str:
@@ -103,9 +80,54 @@ def truncate(s: str, n: int) -> str:
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
-def extract_user_messages(path: Path) -> list[str]:
-    """All human-authored prompts in a session (best-effort, noise-filtered)."""
-    msgs: list[str] = []
+def parse_ts(raw: str | None) -> datetime | None:
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def repo_from_cwd(cwd: str | None, project_dir: str) -> str:
+    if cwd:
+        return Path(cwd).name
+    label = project_dir.lstrip("-").replace("-", "/")
+    return label.split("/")[-1] if label else project_dir
+
+
+def text_from_content(content: object) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = [
+            b.get("text", "")
+            for b in content
+            if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str)
+        ]
+        return "\n".join(parts)
+    return ""
+
+
+# ---------------------------------------------------------------- windowed extraction
+
+
+class SessionActivity:
+    def __init__(self, repo: str) -> None:
+        self.repo = repo
+        self.branch: str | None = None
+        self.prs: set[str] = set()
+        self.user_msgs: list[str] = []
+        self.asst_snippets: list[str] = []
+
+    def has_content(self) -> bool:
+        return bool(self.user_msgs or self.asst_snippets)
+
+
+def extract_window(path: Path, since: datetime) -> SessionActivity | None:
+    """Collect only the messages whose timestamp is >= since (incremental)."""
+    act = SessionActivity(repo_from_cwd(None, path.parent.name))
+    saw = False
     try:
         with path.open("r", encoding="utf-8", errors="replace") as fh:
             for raw_line in fh:
@@ -116,116 +138,222 @@ def extract_user_messages(path: Path) -> list[str]:
                     obj = json.loads(raw_line)
                 except json.JSONDecodeError:
                     continue
-                if obj.get("type") != "user":
+                typ = obj.get("type")
+                if typ not in ("user", "assistant"):
                     continue
+                ts = parse_ts(obj.get("timestamp"))
+                if ts is None or ts < since:
+                    continue
+                saw = True
+
+                if obj.get("cwd"):
+                    act.repo = repo_from_cwd(obj["cwd"], path.parent.name)
+                gb = obj.get("gitBranch")
+                if gb and gb not in ("HEAD", ""):
+                    act.branch = gb
+
                 msg = obj.get("message")
                 if not isinstance(msg, dict):
                     continue
-                content = msg.get("content")
-                text: str | None = None
-                if isinstance(content, str):
-                    text = content
-                elif isinstance(content, list):
-                    parts = [
-                        b.get("text", "")
-                        for b in content
-                        if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str)
-                    ]
-                    if parts:
-                        text = "\n".join(parts)
+                text = text_from_content(msg.get("content")).strip()
                 if not text:
                     continue
-                text = text.strip()
-                # Skip tool-result wrappers, sentinels, slash-command echoes, tiny tokens.
-                if text.startswith("<") or text.startswith("[Request") or text.startswith("Caveat:"):
-                    continue
-                if len(text) < 4:
-                    continue
-                msgs.append(truncate(redact_secrets(text), MSG_TRUNCATE))
+
+                for m in PR_RE.finditer(text):
+                    act.prs.add(next(g for g in m.groups() if g))
+
+                if typ == "user":
+                    if text.startswith("<") or text.startswith("[Request") or text.startswith("Caveat:"):
+                        continue
+                    if len(text) < 4:
+                        continue
+                    if len(act.user_msgs) < MAX_USER_MSGS:
+                        act.user_msgs.append(truncate(redact(text), USER_MSG_TRUNCATE))
+                else:  # assistant — keep insight blocks AND other meaningful lead text
+                    insight_m = INSIGHT_RE.search(text)
+                    snippet = ""
+                    if insight_m:
+                        snippet = "[insight] " + insight_m.group(1).strip()
+                    lead = truncate(text, 350)
+                    if lead and (not snippet or lead[:40] not in snippet):
+                        snippet = (snippet + " | " if snippet else "") + lead
+                    snippet = truncate(redact(snippet), ASST_SNIPPET_TRUNCATE)
+                    if snippet and len(act.asst_snippets) < MAX_ASST_SNIPPETS:
+                        act.asst_snippets.append(snippet)
     except OSError:
-        pass
-    return msgs
+        return None
+    if not saw or not act.has_content():
+        return None
+    return act
 
 
-def build_context(hours: float) -> tuple[str, int]:
-    """Return (context_text_for_claude, n_sessions_with_content)."""
-    transcripts = find_recent_transcripts(hours)
-    if not transcripts:
-        return ("", 0)
+def collect_activity(since: datetime) -> list[SessionActivity]:
+    if not PROJECTS_DIR.exists():
+        return []
+    since_epoch = since.timestamp()
+    candidates: list[Path] = []
+    for path in PROJECTS_DIR.glob("*/*.jsonl"):
+        try:
+            if path.stat().st_mtime >= since_epoch:
+                candidates.append(path)
+        except OSError:
+            continue
+    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    out: list[SessionActivity] = []
+    for path in candidates[:MAX_SESSIONS]:
+        act = extract_window(path, since)
+        if act:
+            out.append(act)
+    return out
 
-    grouped: dict[str, list[tuple[Path, float]]] = defaultdict(list)
-    for path in transcripts:
-        grouped[project_label(path)].append((path, path.stat().st_mtime))
 
-    project_order = sorted(grouped.keys(), key=lambda k: max(m for _, m in grouped[k]), reverse=True)
-    project_order = project_order[:MAX_PROJECTS]
-
+def render_activity_context(acts: list[SessionActivity]) -> str:
     blocks: list[str] = []
-    n_sessions = 0
-    for proj in project_order:
-        sessions = sorted(grouped[proj], key=lambda t: t[1], reverse=True)[:MAX_SESSIONS_PER_PROJECT]
-        session_blocks: list[str] = []
-        for path, mtime in sessions:
-            msgs = extract_user_messages(path)
-            if not msgs:
-                continue
-            msgs = msgs[:MAX_MSGS_PER_SESSION]
-            when = time.strftime("%a %H:%M", time.localtime(mtime))
-            bullets = "\n".join(f"    - {m}" for m in msgs)
-            session_blocks.append(f"  Session (last active {when}, {len(msgs)} prompts shown):\n{bullets}")
-            n_sessions += 1
-        if session_blocks:
-            blocks.append(f"## Project: {proj}\n" + "\n".join(session_blocks))
-
-    return ("\n\n".join(blocks), n_sessions)
+    for a in acts:
+        tags = [f"repo={a.repo}"]
+        if a.branch:
+            tags.append(f"branch={a.branch}")
+        if a.prs:
+            tags.append("PRs=" + ",".join("#" + p for p in sorted(a.prs)))
+        head = "## session (" + ", ".join(tags) + ")"
+        lines = [head]
+        for m in a.user_msgs:
+            lines.append(f"  me> {m}")
+        for s in a.asst_snippets:
+            lines.append(f"  claude> {s}")
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)
 
 
 # ---------------------------------------------------------------- prompts
 
 RECENT_PROMPT = """\
-Below are the prompts I gave Claude Code across my coding sessions in the last {hours_label}, grouped by project. \
-In 4-5 concise bullet points, tell me what I am actively working on right now. \
-Be concrete: name PRs (#NNNN), files, features, and tickets where they appear. \
-Group related work into a single bullet. Ignore environment/setup chatter and one-off lookups. \
-Output ONLY the bullets in Slack mrkdwn (lead each with "• "). No preamble, no closing line.
+You are writing a TIGHT incremental work-log covering ONLY the last {window_label}. \
+Below is my activity in that window — my prompts ("me>") and Claude's responses ("claude>", \
+including insight blocks and meaningful conclusions) — grouped by session and tagged with repo, branch, PRs.
 
---- MY RECENT SESSION ACTIVITY ---
+Produce 1-4 work items. For each, judge what was ACHIEVED or moved forward from the responses \
+(not just what I asked). Merge work on the same repo/PR into one item. Ignore setup/debugging \
+chatter that produced no outcome.
+
+Output ONLY a JSON object, no markdown fence, of this exact shape:
+{{"items": [
+  {{"summary": "<ONE crisp sentence, MAX 25 words — the outcome, not the steps>",
+    "repo": "<repo name or empty>",
+    "branch": "<branch or empty; omit if it is HEAD>",
+    "pr": "<PR number only, e.g. 5605, or empty>"}}
+]}}
+
+Hard rules for summary: max 25 words, one sentence, no semicolon-chained lists, lead with the verb \
+(e.g. "Fixed…", "Shipped…", "Reviewed…"). If multiple things happened on one repo, keep only the most significant.
+If genuinely nothing was accomplished, output {{"items": []}}.
+
+--- ACTIVITY (last {window_label}) ---
 {context}
 """
 
 SCRUM_PROMPT = """\
-You are writing my daily scrum / standup update from my Claude Code activity. \
-Below are the prompts I gave Claude Code over roughly the last {hours_label}, grouped by project. \
-Write a concise standup update I can paste into my team channel, in first person, using this exact Slack mrkdwn structure:
+You are writing my daily standup by synthesizing my own earlier work-log entries (below), \
+each tagged with the time window it covered. Merge duplicates and collapse progressive work \
+on the same item into its latest state. Name the repo and PR inline in each line where known.
 
-*:white_check_mark: Done / shipped:*
-• <completed work — name PRs merged, features finished, tickets closed>
+Output ONLY a JSON object, no markdown fence, of this exact shape (use empty arrays for empty sections):
+{{"done": ["<completed / shipped>", ...],
+  "in_progress": ["<still open / being worked on>", ...],
+  "blockers": ["<only if clearly blocked>", ...]}}
 
-*:hammer_and_wrench: In progress:*
-• <what is still open / being worked on>
+First person, concise, concrete.
 
-*:warning: Blockers:*
-• <anything stuck — OMIT this whole section if there are none>
-
-Focus on the most recent day of progress; use older activity only as background so you don't repeat yesterday's standup. \
-Be concrete (PRs, files, tickets). No preamble before the first heading, no closing line.
-
---- MY SESSION ACTIVITY ---
+--- MY LOGGED UPDATES ({covers_label}) ---
 {context}
 """
 
 
-def hours_label(hours: float) -> str:
-    if hours <= 1:
-        return "hour"
-    if hours < 36:
-        return f"{hours:g} hours"
-    return f"{hours / 24:g} days"
+# ---------------------------------------------------------------- json + block kit
 
 
-def build_prompt(mode: str, hours: float, context: str) -> str:
-    template = RECENT_PROMPT if mode == "recent" else SCRUM_PROMPT
-    return template.format(hours_label=hours_label(hours), context=context)
+def parse_json_lenient(text: str) -> dict | None:
+    """Parse a JSON object from model output, tolerating ```json fences / prose."""
+    t = text.strip()
+    if t.startswith("```"):
+        t = re.sub(r"^```[a-zA-Z]*\n?", "", t)
+        t = re.sub(r"\n?```$", "", t).strip()
+    try:
+        obj = json.loads(t)
+        return obj if isinstance(obj, dict) else None
+    except json.JSONDecodeError:
+        pass
+    m = re.search(r"\{.*\}", t, re.DOTALL)  # first {...} span
+    if m:
+        try:
+            obj = json.loads(m.group(0))
+            return obj if isinstance(obj, dict) else None
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
+def _meta_line(repo: str, branch: str, pr: str) -> str | None:
+    chips: list[str] = []
+    if repo:
+        chips.append(f":package: `{repo}`")
+    if branch and branch.upper() != "HEAD":
+        chips.append(f":herb: `{branch}`")
+    if pr:
+        chips.append(f":twisted_rightwards_arrows: PR #{str(pr).lstrip('#')}")
+    return "   ·   ".join(chips) if chips else None
+
+
+def header_block(text: str) -> dict:
+    return {"type": "header", "text": {"type": "plain_text", "text": text[:150], "emoji": True}}
+
+
+def section_block(mrkdwn: str) -> dict:
+    return {"type": "section", "text": {"type": "mrkdwn", "text": mrkdwn}}
+
+
+def context_block(mrkdwn: str) -> dict:
+    return {"type": "context", "elements": [{"type": "mrkdwn", "text": mrkdwn}]}
+
+
+def build_recent_blocks(items: list[dict], window_label: str) -> tuple[list[dict], str]:
+    blocks: list[dict] = [header_block(f"🤖 Last 2h · {window_label}")]
+    fallback_lines: list[str] = []
+    for i, it in enumerate(items):
+        summary = str(it.get("summary", "")).strip()
+        if not summary:
+            continue
+        if i:
+            blocks.append({"type": "divider"})
+        blocks.append(section_block(f"• {summary}"))
+        meta = _meta_line(str(it.get("repo", "")), str(it.get("branch", "")), str(it.get("pr", "")))
+        if meta:
+            blocks.append(context_block(meta))
+        fallback_lines.append(f"• {summary}" + (f"  ({meta})" if meta else ""))
+    return blocks, "\n".join(fallback_lines)
+
+
+def build_scrum_blocks(data: dict, today_label: str, covers_label: str) -> tuple[list[dict], str]:
+    sections = [
+        ("✅ *Done*", data.get("done") or []),
+        ("🔨 *In progress*", data.get("in_progress") or []),
+        ("⚠️ *Blockers*", data.get("blockers") or []),
+    ]
+    blocks: list[dict] = [header_block(f"📋 Daily scrum · {today_label}")]
+    fallback_lines: list[str] = []
+    first = True
+    for title, lines in sections:
+        lines = [str(x).strip() for x in lines if str(x).strip()]
+        if not lines:
+            continue
+        if not first:
+            blocks.append({"type": "divider"})
+        first = False
+        body = title + "\n" + "\n".join(f"• {ln}" for ln in lines)
+        blocks.append(section_block(body))
+        fallback_lines.append(body)
+    blocks.append(context_block(f"covers {covers_label}"))
+    return blocks, ("\n\n".join(fallback_lines) or "No tracked activity.")
 
 
 # ---------------------------------------------------------------- claude + slack
@@ -259,11 +387,10 @@ def run_claude(prompt: str, model: str) -> str | None:
     if result.returncode != 0:
         sys.stderr.write(f"Error: claude exited {result.returncode}.\n{result.stderr}\n")
         return None
-    out = result.stdout.strip()
-    return out or None
+    return result.stdout.strip() or None
 
 
-def post_to_slack(message: str, channel: str | None) -> bool:
+def post_to_slack(text_fallback: str, blocks: list[dict] | None, channel: str | None) -> bool:
     helper = find_binary(SLACK_HELPER_CANDIDATES, "slack_helper.py")
     if helper is None:
         sys.stderr.write("Error: slack_helper.py not found. Install the slack skill first.\n")
@@ -271,65 +398,229 @@ def post_to_slack(message: str, channel: str | None) -> bool:
     cmd = [sys.executable, str(helper), "post"]
     if channel:
         cmd.extend(["--channel", channel])
-    result = subprocess.run(cmd, input=message, capture_output=True, text=True, check=False)
+    if blocks:
+        cmd.extend(["--blocks", json.dumps(blocks)])
+    # text is the notification preview / fallback when blocks can't render.
+    result = subprocess.run(cmd, input=text_fallback, capture_output=True, text=True, check=False)
     if result.returncode != 0:
-        sys.stderr.write(result.stdout)
-        sys.stderr.write(result.stderr)
+        sys.stderr.write(result.stdout + result.stderr)
     return result.returncode == 0
 
 
-# ---------------------------------------------------------------- main
+# ---------------------------------------------------------------- history store
 
 
-def header(mode: str, hours: float) -> str:
-    if mode == "scrum":
-        return f"*:scroll: Daily scrum — last {hours_label(hours)}* ({time.strftime('%a %d %b')})"
-    return f"*:robot_face: Working on — last {hours_label(hours)}* ({time.strftime('%H:%M')})"
+HISTORY_RETENTION_DAYS = 7  # scrum only reaches back to Fri (~3d); keep a week, prune the rest.
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Claude-summarized digest of recent Claude Code sessions")
-    parser.add_argument("--mode", choices=["recent", "scrum"], default="recent")
-    parser.add_argument("--hours", type=float, default=2.0)
-    parser.add_argument("--model", default="claude-sonnet-4-6")
-    parser.add_argument("--notify", action="store_true", help="POST to Slack (default: print only)")
-    parser.add_argument("--channel", help="Slack channel/user id; falls back to SLACK_DEFAULT_CHANNEL")
-    parser.add_argument("--quiet-if-empty", action="store_true", help="Exit 2 silently if no activity (skips Claude)")
-    parser.add_argument("--dry-run", action="store_true", help="Show the prompt; do NOT call Claude or Slack")
-    args = parser.parse_args()
+def history_path(day: datetime) -> Path:
+    return HISTORY_DIR / f"{day.strftime('%Y-%m-%d')}.jsonl"
 
-    context, n_sessions = build_context(args.hours)
-    if n_sessions == 0:
+
+def prune_history(retention_days: int = HISTORY_RETENTION_DAYS) -> None:
+    """Delete daily history files older than the retention window."""
+    if not HISTORY_DIR.exists():
+        return
+    cutoff = (datetime.now().astimezone() - timedelta(days=retention_days)).date()
+    for p in HISTORY_DIR.glob("*.jsonl"):
+        try:
+            file_day = datetime.strptime(p.stem, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if file_day < cutoff:
+            try:
+                p.unlink()
+            except OSError:
+                pass
+
+
+def append_history(window_label: str, items: list[dict], acts: list[SessionActivity]) -> None:
+    HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        HISTORY_DIR.chmod(0o700)
+    except OSError:
+        pass
+    rec = {
+        "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "window": window_label,
+        "items": [
+            {
+                "summary": redact(str(it.get("summary", "")).strip()),
+                "repo": str(it.get("repo", "")).strip(),
+                "branch": str(it.get("branch", "")).strip(),
+                "pr": str(it.get("pr", "")).strip(),
+            }
+            for it in items
+            if str(it.get("summary", "")).strip()
+        ],
+        "repos": sorted({a.repo for a in acts if a.repo}),
+    }
+    with history_path(datetime.now().astimezone()).open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(rec) + "\n")
+    prune_history()
+
+
+def read_history(start_local: datetime, now_local: datetime) -> list[dict]:
+    entries: list[dict] = []
+    day = start_local.date()
+    while day <= now_local.date():
+        p = HISTORY_DIR / f"{day.strftime('%Y-%m-%d')}.jsonl"
+        if p.is_file():
+            for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                ts = parse_ts(rec.get("ts"))
+                if ts and ts >= start_local:
+                    entries.append(rec)
+        day += timedelta(days=1)
+    return entries
+
+
+# ---------------------------------------------------------------- modes
+
+
+def now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def hours_label(hours: float) -> str:
+    if hours <= 1:
+        return "hour"
+    if hours < 36:
+        return f"{hours:g} hours"
+    return f"{hours / 24:g} days"
+
+
+def do_recent(args: argparse.Namespace) -> int:
+    now_l = datetime.now().astimezone()
+    since = now_utc() - timedelta(hours=args.hours)
+    window_label = f"{(now_l - timedelta(hours=args.hours)).strftime('%H:%M')}–{now_l.strftime('%H:%M')}"
+
+    acts = collect_activity(since)
+    if not acts:
         if args.quiet_if_empty:
             return 2
-        print(f"No Claude Code activity in the last {hours_label(args.hours)}.")
+        print(f"No activity in the last {hours_label(args.hours)}.")
         return 2
 
-    prompt = build_prompt(args.mode, args.hours, context)
+    prompt = RECENT_PROMPT.format(window_label=hours_label(args.hours), context=render_activity_context(acts))
 
     if args.dry_run:
-        print("=" * 60)
-        print(f"MODE={args.mode}  HOURS={args.hours}  MODEL={args.model}  SESSIONS={n_sessions}")
-        print("=" * 60)
         print(prompt)
-        print("=" * 60)
-        print("(--dry-run: not calling Claude or Slack)")
+        print("\n(--dry-run: not calling Claude or Slack)")
         return 0
 
-    summary = run_claude(prompt, args.model)
-    if not summary:
+    raw = run_claude(prompt, args.model)
+    if not raw:
         return 4
+    data = parse_json_lenient(raw)
+    items = (data or {}).get("items") if isinstance(data, dict) else None
+    items = [it for it in items if isinstance(it, dict) and str(it.get("summary", "")).strip()] if items else []
 
-    # Defense in depth: redact again in case the model echoed a secret back.
-    message = redact_secrets(f"{header(args.mode, args.hours)}\n\n{summary}")
-    print(message)
+    if not items:
+        if args.quiet_if_empty:
+            return 2
+        print("Nothing notable in this window.")
+        return 2
 
+    append_history(window_label, items, acts)
+    blocks, fallback = build_recent_blocks(items, window_label)
+    fallback = redact(f"🤖 Last 2h · {window_label}\n{fallback}")
+
+    print(fallback)
     if not args.notify:
         print("\n(no --notify: not posting to Slack)")
         return 0
+    return 0 if post_to_slack(fallback, blocks, args.channel) else 3
 
-    print("\nPosting to Slack…")
-    return 0 if post_to_slack(message, args.channel) else 3
+
+def do_scrum(args: argparse.Namespace) -> int:
+    now_l = datetime.now().astimezone()
+    # "yesterday + today so far"; Monday reaches back to Friday.
+    days_back = 3 if now_l.weekday() == 0 else 1
+    start_local = (now_l - timedelta(days=days_back)).replace(hour=0, minute=0, second=0, microsecond=0)
+
+    covers_from = start_local.strftime("%a %d %b")
+    covers_label = f"{covers_from} → today ({now_l.strftime('%a %d %b')})"
+
+    entries = read_history(start_local, now_l)
+    if entries:
+        lines: list[str] = []
+        for e in entries:
+            win = e.get("window", "?")
+            for it in e.get("items", []):
+                if not isinstance(it, dict):
+                    continue
+                s = str(it.get("summary", "")).strip()
+                if not s:
+                    continue
+                tags = " ".join(
+                    t for t in (it.get("repo", ""), ("PR #" + str(it["pr"]).lstrip("#")) if it.get("pr") else "") if t
+                )
+                lines.append(f"[{win}] {s}" + (f"  ({tags})" if tags else ""))
+        context = "\n".join(lines) if lines else ""
+        source = "history"
+        if not context:
+            entries = []  # nothing usable; drop to fallback below
+    if not entries:
+        # Fallback: re-window the raw transcripts over the same period.
+        acts = collect_activity(start_local.astimezone(timezone.utc))
+        if not acts:
+            if args.quiet_if_empty:
+                return 2
+            print(f"No activity to report for {covers_label}.")
+            return 2
+        context = render_activity_context(acts)
+        source = "transcripts (fallback)"
+
+    prompt = SCRUM_PROMPT.format(covers_label=covers_label, context=context)
+
+    if args.dry_run:
+        print(f"[scrum source: {source}]")
+        print(prompt)
+        print("\n(--dry-run: not calling Claude or Slack)")
+        return 0
+
+    raw = run_claude(prompt, args.model)
+    if not raw:
+        return 4
+    data = parse_json_lenient(raw) or {}
+    today_label = now_l.strftime("%a %d %b")
+    covers = f"{covers_from} → today"
+
+    if any((data.get("done"), data.get("in_progress"), data.get("blockers"))):
+        blocks, fallback = build_scrum_blocks(data, today_label, covers)
+    else:
+        # JSON missing/empty but Claude returned prose — degrade gracefully.
+        body = raw.strip() or "No tracked activity."
+        blocks = [header_block(f"📋 Daily scrum · {today_label}"), section_block(body), context_block(f"covers {covers}")]
+        fallback = f"📋 Daily scrum · {today_label}\n{body}"
+
+    fallback = redact(fallback)
+    print(fallback)
+    if not args.notify:
+        print("\n(no --notify: not posting to Slack)")
+        return 0
+    return 0 if post_to_slack(fallback, blocks, args.channel) else 3
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Incremental Claude-summarized session digest")
+    parser.add_argument("--mode", choices=["recent", "scrum"], default="recent")
+    parser.add_argument("--hours", type=float, default=2.0, help="recent mode: window size (default 2)")
+    parser.add_argument("--model", default="claude-sonnet-4-6")
+    parser.add_argument("--notify", action="store_true", help="POST to Slack (default: print only)")
+    parser.add_argument("--channel", help="Slack channel/user id; falls back to SLACK_DEFAULT_CHANNEL")
+    parser.add_argument("--quiet-if-empty", action="store_true", help="Exit 2 silently when there's nothing to report")
+    parser.add_argument("--dry-run", action="store_true", help="Show the prompt; do NOT call Claude or Slack")
+    args = parser.parse_args()
+
+    return do_scrum(args) if args.mode == "scrum" else do_recent(args)
 
 
 if __name__ == "__main__":

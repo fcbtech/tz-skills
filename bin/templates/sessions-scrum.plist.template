@@ -5,29 +5,29 @@
     <key>Label</key>
     <string>com.tranzact.sessions-scrum</string>
 
-    <!-- Weekdays 10:00 local: a standup-formatted summary of the last ~3 days. -->
+    <!-- Weekdays 09:55 local: standup that aggregates the day's stored 2h
+         updates (yesterday + today so far; Mon reaches back to Fri). The scrum
+         computes its own window, so no --hours is needed. -->
     <key>ProgramArguments</key>
     <array>
         <string>__PYTHON__</string>
         <string>__HOME__/bin/claude-digest.py</string>
         <string>--mode</string>
         <string>scrum</string>
-        <string>--hours</string>
-        <string>72</string>
         <string>--model</string>
         <string>claude-sonnet-4-6</string>
         <string>--notify</string>
         <string>--quiet-if-empty</string>
     </array>
 
-    <!-- Weekday: 1=Mon … 5=Fri. Fires Mon-Fri at 10:00. -->
+    <!-- Weekday: 1=Mon … 5=Fri. Fires Mon-Fri at 09:55. -->
     <key>StartCalendarInterval</key>
     <array>
-        <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>10</integer><key>Minute</key><integer>0</integer></dict>
-        <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>10</integer><key>Minute</key><integer>0</integer></dict>
-        <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>10</integer><key>Minute</key><integer>0</integer></dict>
-        <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>10</integer><key>Minute</key><integer>0</integer></dict>
-        <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>10</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>55</integer></dict>
+        <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>55</integer></dict>
+        <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>55</integer></dict>
+        <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>55</integer></dict>
+        <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>55</integer></dict>
     </array>
 
     <key>RunAtLoad</key>
