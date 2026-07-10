@@ -1,0 +1,94 @@
+```toml
+BASE_URL = "https://be.letstranzact.com"
+
+# --- Account credentials ---
+EMAIL = "sanket+dl2@dummy.test"
+PASSWORD = "123456"
+
+# --- Company profile ---
+COMPANY_NAME = "Dev Automations"
+ADDRESS1 = "4th Floor, Boomerang, Andheri"
+PIN = "400057"
+CITY = "Mumbai"
+STATE = "Maharashtra"
+COUNTRY = "India"
+
+# --- Owner / user ---
+FIRST_NAME = "Sanket"
+LAST_NAME = "Patel"
+CONTACT_NO = "9809809800"
+
+# --- Network counter-party company names ---
+SUPPLIER_COMPANY_NAME = "Procuzy Private Limited"
+BUYER_COMPANY_NAME = "Herbal Products Private Limited"
+BOTH_COMPANY_NAME = "Quantum Traders LLP"
+
+# --- Company logo (optional) ---
+# Path to a logo image file (png/jpg/webp) in the sandbox. If empty, the
+# logo-upload step (013) is skipped — the account is set up without a logo.
+LOGO_PATH = ""
+
+
+# --- Bill of Materials ---
+# Two BOMs resolving to exactly 6 unique inventory items. "Bulb" is shared
+# (typed Both) across both recipes, so the deduped set is: Lamp (Sell),
+# Table Lamp (Sell), Greece (Buy), Bulb (Both), Lamp Shade (Buy),
+# Filament (Buy) — 3 sell-capable + 4 buy-capable, satisfying the downstream
+# sales-doc (011_, 012_) and PO (008_, 009_) minimums within 6 items.
+
+[[BOM]]
+[BOM.FG]
+qty = 1
+unit = "Dozen"
+name = "Lamp"
+price = 8000
+type = "Sell"
+
+[[BOM.RM]]
+qty = 100
+unit = "Gms"
+name = "Greece"
+price = 80
+type = "Buy"
+
+[[BOM.RM]]
+qty = 12
+unit = "Pcs"
+name = "Bulb"
+price = 240
+type = "Both"
+
+[[BOM.RM]]
+qty = 1
+unit = "Pcs"
+name = "Lamp Shade"
+price = 150
+type = "Buy"
+
+[[BOM]]
+[BOM.FG]
+qty = 1
+unit = "Pcs"
+name = "Table Lamp"
+price = 1200
+type = "Sell"
+
+[[BOM.RM]]
+qty = 1
+unit = "Pcs"
+name = "Bulb"
+price = 20
+type = "Both"
+
+[[BOM.RM]]
+qty = 0.3
+unit = "Kg"
+name = "Filament"
+price = 320
+type = "Buy"
+
+# --- Multi-level (nested) BOM — optional ---
+# To make a raw material a sub-assembly, add `child_bom = true` to its [[BOM.RM]]
+# row and ensure that item is the [BOM.FG] of an EARLIER [[BOM]] block (so it's
+# published first). See SKILL.md > "multi-level (nested) BOMs" for a full recipe.
+```
