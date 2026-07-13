@@ -5,8 +5,8 @@ adjacent to this script. Designed to be uploaded directly to a Lambda
 function (or any host with `requests` available).
 
 Logs into the account identified by EMAIL/PASSWORD in data.md, finds the
-first buyer in the company's network, picks the first 2 sellable goods,
-and creates a direct OC with 5% GST applied to each line and randomised
+first buyer in the company's network, picks 3 sellable goods (items 6-8
+of the product catalog), and creates a direct OC with 5% GST applied to each line and randomised
 order quantities. Then it creates the corresponding sales invoice from
 the OC, followed by two delivery challans: the first delivering 40% of
 each line's ordered quantity, the second delivering the remaining 60%.
@@ -18,6 +18,7 @@ import logging
 import random
 import re
 import sys
+import time
 import tomllib
 import uuid as _uuid
 from datetime import date, timedelta
@@ -54,7 +55,8 @@ DEFAULT_HEADERS = {
 # Automation identity — edit here for a one-off run.
 OC_DOC_TYPE_INT = 4
 TAX_RATE = 0.05
-NUM_ITEMS = 2
+NUM_ITEMS = 3
+ITEM_OFFSET = 5  # start index into the sorted product list; diversifies which items each doc uses
 QTY_MIN = 500
 QTY_MAX = 1000
 CHALLAN_FIRST_PCT = 0.40
@@ -125,10 +127,39 @@ def _auth_headers(token: str) -> dict[str, str]:
     return {**DEFAULT_HEADERS, "Authorization": f"Bearer {token}"}
 
 
+# --- Throttle-aware retry (per-call backoff on HTTP 429) --------------------
+
+_THROTTLE_RETRIES = 4
+_THROTTLE_BACKOFF = [3, 6, 12, 24]
+
+
+def _throttle_sleep(resp, method: str, path: str, attempt: int) -> None:
+    """Back off before retrying a rate-limited (429) request. Honors Retry-After.
+
+    Retries the SINGLE failing call rather than letting the whole script fail and
+    be re-run — that avoids the 60s wait + full re-run (and duplicate work) that
+    dominated slow runs.
+    """
+    wait = _THROTTLE_BACKOFF[min(attempt, len(_THROTTLE_BACKOFF) - 1)]
+    retry_after = resp.headers.get("Retry-After")
+    if retry_after:
+        try:
+            wait = max(wait, int(float(retry_after)) + 2)
+        except (TypeError, ValueError):
+            pass
+    log.info("    throttled (429) on %s %s -> backoff %ss, retry %d/%d",
+             method, path, wait, attempt + 1, _THROTTLE_RETRIES)
+    time.sleep(wait)
+
+
 def _get(token: str, path: str, params: dict | None = None) -> dict:
     url = f"{BASE_URL}{path}"
     log.info(">>> GET %s", path)
-    response = requests.get(url, params=params, headers=_auth_headers(token), timeout=TIMEOUT)
+    for _tt in range(_THROTTLE_RETRIES + 1):
+        response = requests.get(url, params=params, headers=_auth_headers(token), timeout=TIMEOUT)
+        if response.status_code != 429 or _tt == _THROTTLE_RETRIES:
+            break
+        _throttle_sleep(response, "GET", path, _tt)
     log.info("<<< GET %s -> %d", path, response.status_code)
     if response.status_code >= 400:
         sys.exit(f"GET {path} failed (HTTP {response.status_code}): {response.text[:300]}")
@@ -138,7 +169,11 @@ def _get(token: str, path: str, params: dict | None = None) -> dict:
 def _post(token: str, path: str, payload: dict) -> dict:
     url = f"{BASE_URL}{path}"
     log.info(">>> POST %s", path)
-    response = requests.post(url, json=payload, headers=_auth_headers(token), timeout=TIMEOUT)
+    for _tt in range(_THROTTLE_RETRIES + 1):
+        response = requests.post(url, json=payload, headers=_auth_headers(token), timeout=TIMEOUT)
+        if response.status_code != 429 or _tt == _THROTTLE_RETRIES:
+            break
+        _throttle_sleep(response, "POST", path, _tt)
     log.info("<<< POST %s -> %d", path, response.status_code)
     if response.status_code >= 400:
         sys.exit(f"POST {path} failed (HTTP {response.status_code}): {response.text[:300]}")
@@ -296,7 +331,8 @@ def fetch_first_n_products(token: str, buyer_id: int) -> list[dict]:
     )["data"]["results"]
     if len(rows) < NUM_ITEMS:
         sys.exit(f"Need {NUM_ITEMS} sellable goods; found {len(rows)}.")
-    return rows[:NUM_ITEMS]
+    start = min(ITEM_OFFSET, len(rows) - NUM_ITEMS)
+    return rows[start:start + NUM_ITEMS]
 
 
 def fetch_tax_master(token: str, rate: float) -> dict:

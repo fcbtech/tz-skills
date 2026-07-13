@@ -51,6 +51,7 @@ import datetime
 import logging
 import re
 import sys
+import time
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -133,10 +134,39 @@ def _auth_headers(token: str) -> dict[str, str]:
     return {**DEFAULT_HEADERS, "Authorization": f"Bearer {token}"}
 
 
+# --- Throttle-aware retry (per-call backoff on HTTP 429) --------------------
+
+_THROTTLE_RETRIES = 4
+_THROTTLE_BACKOFF = [3, 6, 12, 24]
+
+
+def _throttle_sleep(resp, method: str, path: str, attempt: int) -> None:
+    """Back off before retrying a rate-limited (429) request. Honors Retry-After.
+
+    Retries the SINGLE failing call rather than letting the whole script fail and
+    be re-run — that avoids the 60s wait + full re-run (and duplicate work) that
+    dominated slow runs.
+    """
+    wait = _THROTTLE_BACKOFF[min(attempt, len(_THROTTLE_BACKOFF) - 1)]
+    retry_after = resp.headers.get("Retry-After")
+    if retry_after:
+        try:
+            wait = max(wait, int(float(retry_after)) + 2)
+        except (TypeError, ValueError):
+            pass
+    log.info("    throttled (429) on %s %s -> backoff %ss, retry %d/%d",
+             method, path, wait, attempt + 1, _THROTTLE_RETRIES)
+    time.sleep(wait)
+
+
 def _get(token: str, path: str, params: dict | None = None) -> dict:
     url = f"{BASE_URL}{path}"
     log.info(">>> GET %s", path)
-    r = requests.get(url, params=params, headers=_auth_headers(token), timeout=TIMEOUT)
+    for _tt in range(_THROTTLE_RETRIES + 1):
+        r = requests.get(url, params=params, headers=_auth_headers(token), timeout=TIMEOUT)
+        if r.status_code != 429 or _tt == _THROTTLE_RETRIES:
+            break
+        _throttle_sleep(r, "GET", path, _tt)
     log.info("<<< GET %s -> %d", path, r.status_code)
     if r.status_code >= 400:
         raise RuntimeError(f"GET {path} failed (HTTP {r.status_code}): {r.text[:500]}")
@@ -146,7 +176,11 @@ def _get(token: str, path: str, params: dict | None = None) -> dict:
 def _post(token: str, path: str, payload: dict) -> dict:
     url = f"{BASE_URL}{path}"
     log.info(">>> POST %s", path)
-    r = requests.post(url, json=payload, headers=_auth_headers(token), timeout=TIMEOUT)
+    for _tt in range(_THROTTLE_RETRIES + 1):
+        r = requests.post(url, json=payload, headers=_auth_headers(token), timeout=TIMEOUT)
+        if r.status_code != 429 or _tt == _THROTTLE_RETRIES:
+            break
+        _throttle_sleep(r, "POST", path, _tt)
     log.info("<<< POST %s -> %d", path, r.status_code)
     if r.status_code >= 400:
         raise RuntimeError(f"POST {path} failed (HTTP {r.status_code}): {r.text[:500]}")
@@ -199,14 +233,41 @@ def fetch_number_series(token: str, store_id: int) -> list[dict[str, Any]]:
                 params={"doc_type": BOM_DOC_TYPE_STR, "store_id": store_id})["data"]["number"]
 
 
+_PRODUCT_CACHE: dict[str, dict[str, Any]] = {}
+
+
+def prefetch_products(token: str) -> None:
+    """Fetch the whole product list ONCE and cache it by lowercased name.
+
+    BOM rows reuse the same items heavily (a raw material appears across several
+    finished goods), so resolving each row with its own /settings/product/ query
+    means dozens of redundant round-trips. Pull the full list up front instead;
+    per-row lookups then hit the cache. find_product_by_name still falls back to a
+    targeted query on a cache miss (e.g. a paginated list), so behaviour is
+    unchanged — just fewer calls.
+    """
+    rows = _get(token, "/settings/product/", params={
+        "product_type": "both", "place": "product_name", "service_type": "",
+    })["data"]["results"]
+    for row in rows:
+        key = (row.get("product_name") or "").strip().lower()
+        if key:
+            _PRODUCT_CACHE.setdefault(key, row)
+    log.info("Prefetched %d products into the lookup cache.", len(_PRODUCT_CACHE))
+
+
 def find_product_by_name(token: str, name: str) -> dict[str, Any]:
+    needle = name.strip().lower()
+    cached = _PRODUCT_CACHE.get(needle)
+    if cached is not None:
+        return cached
     rows = _get(token, "/settings/product/", params={
         "product_type": "both", "place": "product_name",
         "service_type": "", "query": name,
     })["data"]["results"]
-    needle = name.strip().lower()
     for row in rows:
         if (row.get("product_name") or "").strip().lower() == needle:
+            _PRODUCT_CACHE[needle] = row
             return row
     raise RuntimeError(
         f"Product not found by name: {name!r} (search returned {len(rows)} row(s)). "
@@ -492,6 +553,8 @@ def main() -> None:
     series_list = fetch_number_series(token, store_id)
     if not series_list:
         raise RuntimeError(f"No BOM number series available for store_id={store_id}.")
+
+    prefetch_products(token)  # one product-list call up front; per-row lookups hit the cache
 
     palette = ["#A3D5FD", "#FFC09F", "#B5EAD7", "#F6C6EA", "#FFE6A7"]
     created_bom_ids: list[int] = []

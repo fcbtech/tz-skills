@@ -5,7 +5,7 @@ adjacent to this script. Designed to be uploaded directly to a Lambda
 function (or any host with `requests` available).
 
 Logs into the account identified by EMAIL/PASSWORD in data.md, finds the
-second buyer in the company's network, picks the first sellable goods item,
+second buyer in the company's network, picks one sellable goods item (item 5 of the product catalog),
 creates a direct OC with 28% GST + Rs. 2000 shipping charge taxed at 18%,
 then creates a Challan delivering 60% of the OC quantity, and finally
 creates an Invoice for the full OC quantity.
@@ -20,6 +20,7 @@ import logging
 import random
 import re
 import sys
+import time
 import tomllib
 import uuid as _uuid
 from pathlib import Path
@@ -54,6 +55,7 @@ DEFAULT_HEADERS = {
 
 # Automation identity — edit here for a one-off run.
 BUYER_INDEX = 1  # 0 = first buyer, 1 = second buyer.
+ITEM_OFFSET = 4  # which item in the sorted product list to use; diversifies items across docs
 TAX_RATE_ITEM = 0.28
 TAX_RATE_SHIPPING = 0.18
 SHIPPING_CHARGE = 2000
@@ -125,10 +127,39 @@ def _auth_headers(token: str) -> dict[str, str]:
     return {**DEFAULT_HEADERS, "Authorization": f"Bearer {token}"}
 
 
+# --- Throttle-aware retry (per-call backoff on HTTP 429) --------------------
+
+_THROTTLE_RETRIES = 4
+_THROTTLE_BACKOFF = [3, 6, 12, 24]
+
+
+def _throttle_sleep(resp, method: str, path: str, attempt: int) -> None:
+    """Back off before retrying a rate-limited (429) request. Honors Retry-After.
+
+    Retries the SINGLE failing call rather than letting the whole script fail and
+    be re-run — that avoids the 60s wait + full re-run (and duplicate work) that
+    dominated slow runs.
+    """
+    wait = _THROTTLE_BACKOFF[min(attempt, len(_THROTTLE_BACKOFF) - 1)]
+    retry_after = resp.headers.get("Retry-After")
+    if retry_after:
+        try:
+            wait = max(wait, int(float(retry_after)) + 2)
+        except (TypeError, ValueError):
+            pass
+    log.info("    throttled (429) on %s %s -> backoff %ss, retry %d/%d",
+             method, path, wait, attempt + 1, _THROTTLE_RETRIES)
+    time.sleep(wait)
+
+
 def _get(token: str, path: str, params: dict | None = None) -> dict:
     url = f"{BASE_URL}{path}"
     log.info(">>> GET %s", path)
-    response = requests.get(url, params=params, headers=_auth_headers(token), timeout=TIMEOUT)
+    for _tt in range(_THROTTLE_RETRIES + 1):
+        response = requests.get(url, params=params, headers=_auth_headers(token), timeout=TIMEOUT)
+        if response.status_code != 429 or _tt == _THROTTLE_RETRIES:
+            break
+        _throttle_sleep(response, "GET", path, _tt)
     log.info("<<< GET %s -> %d", path, response.status_code)
     if response.status_code >= 400:
         sys.exit(f"GET {path} failed (HTTP {response.status_code}): {response.text[:300]}")
@@ -138,7 +169,11 @@ def _get(token: str, path: str, params: dict | None = None) -> dict:
 def _post(token: str, path: str, payload: dict) -> dict:
     url = f"{BASE_URL}{path}"
     log.info(">>> POST %s", path)
-    response = requests.post(url, json=payload, headers=_auth_headers(token), timeout=TIMEOUT)
+    for _tt in range(_THROTTLE_RETRIES + 1):
+        response = requests.post(url, json=payload, headers=_auth_headers(token), timeout=TIMEOUT)
+        if response.status_code != 429 or _tt == _THROTTLE_RETRIES:
+            break
+        _throttle_sleep(response, "POST", path, _tt)
     log.info("<<< POST %s -> %d", path, response.status_code)
     if response.status_code >= 400:
         sys.exit(f"POST {path} failed (HTTP {response.status_code}): {response.text[:300]}")
@@ -303,7 +338,7 @@ def fetch_first_product(token: str, buyer_id: int) -> dict:
     )["data"]["results"]
     if not rows:
         sys.exit("No sellable goods found — add a sellable inventory item first.")
-    return rows[0]
+    return rows[min(ITEM_OFFSET, len(rows) - 1)]
 
 
 def build_oc_payload(

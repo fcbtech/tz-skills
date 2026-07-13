@@ -4,8 +4,8 @@ Standalone — no imports from the qa framework. Reads inputs from data.md
 adjacent to this script. Designed to be uploaded directly to a Lambda
 function (or any host with `requests` available).
 
-Picks the first supplier in the company's network, the first buyable goods
-product linked to that supplier, and a random PO quantity. The chain then
+Picks the first supplier in the company's network, one buyable goods
+product (item 15 of the product catalog) linked to that supplier, and a random PO quantity. The chain then
 exercises a full Quality-Inspection + return flow:
 
   1. Direct PO — 1 item, random qty, product's own tax (fall back to 18% GST).
@@ -24,6 +24,7 @@ import math
 import random
 import re
 import sys
+import time
 import tomllib
 import uuid as _uuid
 from datetime import date
@@ -66,6 +67,7 @@ PRDC_DOC_TYPE_INT = 44
 
 SUPPLIER_INDEX = 0  # 0 = first supplier in counter-party list.
 NUM_ITEMS = 1
+ITEM_OFFSET = 14  # which item in the sorted product list to use; diversifies items across docs
 PO_QTY_MIN = 50
 PO_QTY_MAX = 200
 INWARD1_FRACTION = 0.40
@@ -152,10 +154,39 @@ def _auth_headers(token: str) -> dict[str, str]:
     return {**DEFAULT_HEADERS, "Authorization": f"Bearer {token}"}
 
 
+# --- Throttle-aware retry (per-call backoff on HTTP 429) --------------------
+
+_THROTTLE_RETRIES = 4
+_THROTTLE_BACKOFF = [3, 6, 12, 24]
+
+
+def _throttle_sleep(resp, method: str, path: str, attempt: int) -> None:
+    """Back off before retrying a rate-limited (429) request. Honors Retry-After.
+
+    Retries the SINGLE failing call rather than letting the whole script fail and
+    be re-run — that avoids the 60s wait + full re-run (and duplicate work) that
+    dominated slow runs.
+    """
+    wait = _THROTTLE_BACKOFF[min(attempt, len(_THROTTLE_BACKOFF) - 1)]
+    retry_after = resp.headers.get("Retry-After")
+    if retry_after:
+        try:
+            wait = max(wait, int(float(retry_after)) + 2)
+        except (TypeError, ValueError):
+            pass
+    log.info("    throttled (429) on %s %s -> backoff %ss, retry %d/%d",
+             method, path, wait, attempt + 1, _THROTTLE_RETRIES)
+    time.sleep(wait)
+
+
 def _get(token: str, path: str, params: dict | None = None) -> dict | list:
     url = f"{BASE_URL}{path}"
     log.info(">>> GET %s", path)
-    response = requests.get(url, params=params, headers=_auth_headers(token), timeout=TIMEOUT)
+    for _tt in range(_THROTTLE_RETRIES + 1):
+        response = requests.get(url, params=params, headers=_auth_headers(token), timeout=TIMEOUT)
+        if response.status_code != 429 or _tt == _THROTTLE_RETRIES:
+            break
+        _throttle_sleep(response, "GET", path, _tt)
     log.info("<<< GET %s -> %d", path, response.status_code)
     if response.status_code >= 400:
         sys.exit(f"GET {path} failed (HTTP {response.status_code}): {response.text[:300]}")
@@ -165,7 +196,11 @@ def _get(token: str, path: str, params: dict | None = None) -> dict | list:
 def _post(token: str, path: str, payload: dict) -> dict:
     url = f"{BASE_URL}{path}"
     log.info(">>> POST %s", path)
-    response = requests.post(url, json=payload, headers=_auth_headers(token), timeout=TIMEOUT)
+    for _tt in range(_THROTTLE_RETRIES + 1):
+        response = requests.post(url, json=payload, headers=_auth_headers(token), timeout=TIMEOUT)
+        if response.status_code != 429 or _tt == _THROTTLE_RETRIES:
+            break
+        _throttle_sleep(response, "POST", path, _tt)
     log.info("<<< POST %s -> %d", path, response.status_code)
     if response.status_code >= 400:
         sys.exit(f"POST {path} failed (HTTP {response.status_code}): {response.text[:300]}")
@@ -388,10 +423,10 @@ def discover_context(token: str) -> dict[str, Any]:
             "counter_party": sup_id,
         },
     )["data"]["results"]
-    products = [p for p in prod_resp if not p.get("is_service")][:NUM_ITEMS]
-    if len(products) < NUM_ITEMS:
-        sys.exit(f"Need {NUM_ITEMS} buyable goods for supplier {sup_id}; got {len(products)}")
-    product = products[0]
+    buyable = [p for p in prod_resp if not p.get("is_service")]
+    if not buyable:
+        sys.exit(f"Need a buyable good for supplier {sup_id}; got 0")
+    product = buyable[min(ITEM_OFFSET, len(buyable) - 1)]
     tax_master = _resolve_product_tax(product, taxes_by_id)
 
     ds = _get(

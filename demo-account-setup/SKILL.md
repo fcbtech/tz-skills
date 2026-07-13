@@ -36,18 +36,25 @@ After a successful run the demo account will have:
 3. Master units of measure seeded (derived from `[[BOM]]` rows in `data.md`).
 4. Inventory items derived from `[[BOM]]` in `data.md` — every distinct item across all
    BOM recipes is created on the account, deduped by name, at a per-unit price of
-   `price / qty`. The BOM(s) are authored so this resolves to **exactly 6 unique items**
-   (≥3 sell-capable and ≥3 buy-capable), keeping the initial inventory seed small.
-5. Three Order Confirmation flows (sales side):
-   - OC for the first buyer.
-   - OC for the second buyer, followed by a Challan and Invoice.
-   - OC followed by an Invoice and two split Challans.
-6. Three Purchase Order flows (buy side):
-   - PO for the first supplier → Inward (100%) → Invoice.
-   - PO for the second supplier → Inward (60% partial receipt).
-   - PO for the first supplier (1 item) → split Inwards (40% + 60%) → two QIRs (full / 90% accept)
-     → PRDC for the rejected 10% → Invoice for the full PO quantity.
-7. Three Sales Enquiries (lead-tracking side):
+   `price / qty`. The BOM(s) are authored so this resolves to **exactly 15 unique items —
+   5 finished goods typed `"Sell"` + 10 raw materials typed `"Both"`** (⇒ 15 sell-capable,
+   10 buy-capable), keeping the initial inventory seed compact but flexible.
+5. Three Order Confirmation flows (sales side). The OC/PO scripts are wired to spread the
+   inventory across documents so that **all 15 items are exercised** — each script uses a
+   distinct slice of the product list (by `ITEM_OFFSET` + item count) rather than always the
+   first two, giving a diversified demo. Sales side uses catalog items 1–8:
+   - OC for the first buyer (items 1–4).
+   - OC for the second buyer (item 5), followed by a Challan and Invoice.
+   - OC followed by an Invoice and two split Challans (items 6–8).
+6. Three Purchase Order flows (buy side). Buy side uses catalog items 9–15:
+   - PO for the first supplier (items 9–11) → Inward (100%) → Invoice.
+   - PO for the second supplier (items 12–14) → Inward (60% partial receipt).
+   - PO for the first supplier (item 15) → split Inwards (40% + 60%) → two QIRs (full / 90% accept)
+     → PRDC for the rejected 10% → Invoice for the full PO quantity. **The QIR step is a premium
+     feature** (`grn-qir`); if it isn't enabled, this flow stops after the inwards (non-fatal — the
+     PO + inwards are still created) and the run continues.
+7. Three Sales Enquiries (lead-tracking side). **Sales Enquiry is a premium feature** (`ncd`); if it
+   isn't enabled, this whole step is skipped (non-fatal) and the run continues.
    - SE for the first buyer (2 items).
    - SE for the second buyer (1 item), flipped to deal_status = Rejected.
    - SE for the first buyer (1 item) followed by an SQ-from-SE.
@@ -55,11 +62,15 @@ After a successful run the demo account will have:
    - SQ for the first buyer (2 items).
    - SQ for the second buyer (1 item), flipped to deal_status = Lost.
    - SQ for the first buyer (1 item), flipped to deal_status = Won.
-9. One or two Bills of Materials built from the `[[BOM]]` block(s) in `data.md` — each a
-   finished good + its raw materials, published against the first non-reject store and the
-   first available BOM number series.
-10. **(Optional)** The company logo, when `LOGO_PATH` in `data.md` points to an image file.
-    If `LOGO_PATH` is empty the logo step is skipped and the account is set up without a logo.
+9. Bills of Materials built from the `[[BOM]]` block(s) in `data.md` — each a finished good + its
+   raw materials, published against the first non-reject store and the first available BOM number
+   series. The BOM step is **non-fatal**: if it fails for **any** reason (the `bom` premium feature
+   not enabled → HTTP 426, or a backend error → HTTP 500), it is **skipped** and everything else is
+   still created — the BOM can be added later by re-running `004` once the cause is resolved.
+10. **(Optional)** The company logo — from `LOGO_PATH` (an image file) if set, otherwise
+    best-effort fetched from `COMPANY_WEBSITE` (the site's apple-touch-icon / icon / og:image /
+    favicon). If both are empty (or the website yields no usable image), the logo step is skipped
+    (non-fatal) and the account is set up without a logo.
 
 The teammate gets a printable email + password to hand to the demo audience.
 
@@ -101,7 +112,8 @@ surface the base URL used in the final credentials report (Step 7); otherwise ne
 | `BUYER_COMPANY_NAME`    | Counter-party (Buyer) name             | `data.md.template`        |
 | `BOTH_COMPANY_NAME`     | Counter-party (Both) name              | `data.md.template`        |
 | `BOM`                   | Bill(s) of materials — sole source of inventory items + UoMs | `data.md.template` |
-| `LOGO_PATH`             | Optional path to a logo image in the sandbox; empty ⇒ logo step skipped | `data.md.template` (empty) |
+| `LOGO_PATH`             | Optional path to a logo image in the sandbox (preferred logo source) | `data.md.template` (empty) |
+| `COMPANY_WEBSITE`       | Optional company website URL; used only when `LOGO_PATH` has no file — step 013 fetches the logo from the site | `data.md.template` (empty) |
 
 Always confirm `EMAIL` is unique on the target env — duplicate emails fail the signup.
 
@@ -138,11 +150,15 @@ first giving the teammate a chance to provide one. Group related fields into sin
    `STATE`, `COUNTRY`.
 4. **Owner contact** — `FIRST_NAME`, `LAST_NAME`, `CONTACT_NO` (10 digits, no `+91`).
 5. **Counter-parties + inventory** (industry-derived, see below).
-6. **Company logo (optional)** — `LOGO_PATH`. Ask whether the teammate wants a company logo on
-   the account. If yes, they must provide the path to an image file (png/jpg/webp) available in
-   the sandbox (e.g. one they uploaded to the chat). If they decline or have no file, leave
-   `LOGO_PATH` empty — the logo step is then skipped. Never generate or substitute a placeholder
-   image.
+6. **Company logo (optional)** — `LOGO_PATH` and/or `COMPANY_WEBSITE`. Ask whether the teammate
+   wants a company logo on the account. There are two ways to supply one:
+   - **An image file** — the path to a png/jpg/webp available in the sandbox (e.g. one they
+     uploaded to the chat). Set `LOGO_PATH`. This is preferred when available.
+   - **A company website** — if they don't have a file but can give the company's website URL,
+     set `COMPANY_WEBSITE` (e.g. `https://acme.com`). Step 013 will best-effort fetch the logo
+     from that site (apple-touch-icon / icon / og:image / favicon) and upload it.
+   `LOGO_PATH` wins if both are given. If they decline or provide neither, leave both empty — the
+   logo step is then skipped (non-fatal). Never generate or substitute a placeholder image.
 
 For each value the teammate provides, replace the template default in memory. Only when the
 teammate explicitly skips a field, fall back to the template default for that field.
@@ -151,29 +167,30 @@ teammate explicitly skips a field, fall back to the template default for that fi
 
 - Three plausible counter-party names — one Supplier, one Buyer, one "Both" — that would
   realistically transact with a company in that industry.
-- One or at most two `[[BOM]]` recipes. Each recipe describes ONE finished good and the raw
-  materials consumed to produce a given quantity of it. The BOM is the **sole source of truth**
-  for the inventory items and UoMs seeded on the account — there is no separate `INVENTORY_ITEMS`
-  list any more. Author the recipe(s) so that the deduped item set is **exactly 6 unique items**
-  (≥3 sell-capable and ≥3 buy-capable).
+- Several `[[BOM]]` recipes (typically five — one per finished good). Each recipe describes
+  ONE finished good and the raw materials consumed to produce a given quantity of it. The BOM is
+  the **sole source of truth** for the inventory items and UoMs seeded on the account — there is
+  no separate `INVENTORY_ITEMS` list any more. Author the recipes so that the deduped item set is
+  **exactly 15 unique items — 5 finished goods typed `"Sell"` + 10 raw materials typed `"Both"`**
+  (⇒ 15 sell-capable, 10 buy-capable).
 
 `[[BOM]]` shape (TOML):
 
 ```toml
 [[BOM]]
-[BOM.FG]                 # finished good (exactly one per BOM block; type "Sell" or "Both")
+[BOM.FG]                 # finished good (exactly one per BOM block; type "Sell" for this seed)
 qty = 1
 unit = "Pcs"
 name = "Sliding Window"
 price = 8500             # value of `qty` units of the FG (per-unit = price / qty)
 type = "Sell"
 
-[[BOM.RM]]               # one or more raw materials (type "Buy" or "Both")
+[[BOM.RM]]               # one or more raw materials (type "Both" for this seed)
 qty = 12
 unit = "Sqft"
 name = "Float Glass"
 price = 960
-type = "Buy"
+type = "Both"
 # child_bom = true        # OPTIONAL (multi-level): link this RM to its own published
                           # BOM so its sub-components expand inline. The RM item must be
                           # the [BOM.FG] of an EARLIER [[BOM]] block. Use a bom_number/
@@ -184,18 +201,18 @@ type = "Buy"
 
 Rules for the BOM(s) you generate:
 
-- Generate **one `[[BOM]]` block, or at most two** — never more. This is the initial seed;
-  keep it deliberately small.
-- Across all BOM blocks combined the deduped item set must be **exactly 6 unique items**
-  (counted by name — the finished good(s) plus every distinct raw material together). The 003
-  script creates one inventory item per unique name, so 6 unique names ⇒ exactly 6 items on
-  the account. Reuse the same raw material across both BOMs (e.g. a shared "Float Glass") to
-  keep two recipes inside the 6-item budget — reused names collapse to a single item.
-- Each `[[BOM]]` block has exactly one `[BOM.FG]` table — the finished good. Its `type` is
-  `"Sell"` (or `"Both"` if the company also resells it as-is).
-- Each `[[BOM]]` block has one or more `[[BOM.RM]]` rows — the raw materials. Their `type`
-  is `"Buy"` (or `"Both"` when the same item is both bought as a raw material and resold
-  finished).
+- Generate **as many `[[BOM]]` blocks as needed to realise the 15-item set — typically five**
+  (one per finished good), plus at most one extra block if you author a nested sub-assembly
+  (see multi-level below). This is the initial seed; keep it to those 15 items — don't inflate it.
+- Across all BOM blocks combined the deduped item set must be **exactly 15 unique items**
+  (counted by name — every finished good plus every distinct raw material together). The 003
+  script creates one inventory item per unique name, so 15 unique names ⇒ exactly 15 items on
+  the account. Reuse the same raw material across multiple BOMs (e.g. a shared "Float Glass") so
+  the recipes stay inside the 15-item budget — reused names collapse to a single item.
+- Each `[[BOM]]` block has exactly one `[BOM.FG]` table — the finished good. For this seed
+  its `type` is `"Sell"` (finished goods are sold, not purchased).
+- Each `[[BOM]]` block has one or more `[[BOM.RM]]` rows — the raw materials. For this seed
+  their `type` is `"Both"` (bought as inputs, and also resellable).
 - `qty` is the quantity of that item consumed/produced for this recipe; `price` is the value
   of that `qty` in INR (not per-unit). The 003 script creates the inventory item at a
   per-unit price of `price / qty`. Every row (including a reused RM) must carry valid `qty`
@@ -205,16 +222,16 @@ Rules for the BOM(s) you generate:
   and `unit`.
 - Choose realistic `unit` values from the standard set (Kg, Gms, Litres, ml, Pcs, Sheets,
   Metres, Sqft, Dozen, Set, Nos, etc.).
-- **Downstream minimums you MUST satisfy within those 6 items** (a `"Both"` item counts
-  toward both tallies):
-  - **≥3 sell-capable items** (type `"Sell"` or `"Both"`) — the sales-document scripts
-    (`011_…`, `012_…`) need 3 sell-side products on the account.
-  - **≥3 buy-capable items** (type `"Buy"` or `"Both"`) — the PO/inward scripts (`008_…`,
-    `009_…`) need buyable goods; author 3 to leave comfortable margin.
-  - The cleanest compliant shape: **two BOMs whose two finished goods are `"Sell"`, with one
-    shared raw material typed `"Both"` and three other raw materials typed `"Buy"`.** That
-    yields 3 sell-capable items (2 FGs + the Both) and ≥3 buy-capable items (the Both + 3 Buy),
-    all inside exactly 6 unique items.
+- **Required types:** the **5 finished goods are typed `"Sell"`** and the **10 raw materials are
+  typed `"Both"`**. This gives **15 sell-capable items** (5 Sell FGs + 10 Both RMs) and **10
+  buy-capable items** (the 10 Both RMs), far above the downstream script minimums (the sales
+  scripts `011_…`/`012_…` need ≥3 sell-side products; the PO/inward scripts `008_…`/`009_…` need
+  buyable goods — the RMs cover those). Finished goods are **not** typed `"Both"`: a finished good
+  that is also purchasable has been seen to trip the BOM create endpoint, so keep FGs `"Sell"`.
+  - The cleanest compliant shape: **five BOMs whose five finished goods are typed `"Sell"`,
+    drawing their raw materials from a shared pool of 10 items typed `"Both"`, reused across the
+    recipes so all 10 raw materials appear at least once.** That yields exactly 15 unique items
+    (5 Sell + 10 Both).
 - The 003 script auto-attaches the company's default GST tax (first `tax_type == "gst"`
   entry) to every product it creates. Do not list a tax field in the BOM — it's handled
   for you. If the account has no GST master configured, 003 fails fast with a clear error.
@@ -222,41 +239,48 @@ Rules for the BOM(s) you generate:
   to link it to that item's existing published BOM; its raw materials then expand as a
   sub-assembly. The linked item **must be the `[BOM.FG]` of an earlier `[[BOM]]` block** in
   the same `data.md` (so it is published before the parent is created — list the child BOM
-  first) and should be typed `"Both"`. Pass a `bom_number`/`bom_name` string instead of
-  `true` to target a specific BOM. Still respect the exactly-6-unique-items budget and the
-  ≥3-sell / ≥3-buy minimums. Omit `child_bom` for the normal flat seed; the default is flat.
+  first) and should be typed `"Both"` (a sub-assembly is both manufactured and consumed). Pass a
+  `bom_number`/`bom_name` string instead of `true` to target a specific BOM. Still respect the
+  exactly-15-unique-items budget (5 `"Sell"` finished goods + 10 `"Both"` raw materials; the nested
+  sub-assembly is one of the `"Both"` items, so it may add one extra `[[BOM]]` block — six in total
+  — while keeping 15 items). Omit `child_bom` for the normal flat seed; the default is flat.
   (On read-back the view flattens child RMs into top-level rows; the script handles this.)
 
 Every name, item, unit, and price must be **relatable to the stated industry**. Each example
-below ships two `[[BOM]]` recipes totalling exactly 6 unique items, with one shared `"Both"`
-raw material so the ≥3-sell / ≥3-buy minimums are met:
+below ships five `[[BOM]]` recipes totalling exactly 15 unique items — **5 finished goods typed
+`"Sell"`** drawing on a shared pool of **10 raw materials typed `"Both"`** (15 sell-capable, 10
+buy-capable). Wire each finished good to a few raw materials from the pool, reusing them freely,
+so every raw material appears in at least one recipe:
 
 - *Window manufacturer* → suppliers: "Saint Glass Traders", "Aluminium Extrusions Pvt Ltd";
   buyer: "Skyline Builders Pvt Ltd"; both: "Hardware Mart LLP".
-  - BOM #1: 1 Pcs Sliding Window (Sell, 8500) ← 12 Sqft Float Glass (Buy, 960),
-    2.5 Kg Aluminium Section (Both, 800).
-  - BOM #2: 1 Pcs Fixed Window (Sell, 6200) ← 10 Sqft Float Glass (Buy, 800, reused),
-    6 Metres Rubber Gasket (Buy, 150), 2 Set Handle Set (Buy, 220).
-  - 6 unique items: Sliding Window (Sell), Fixed Window (Sell), Float Glass (Buy),
-    Aluminium Section (Both), Rubber Gasket (Buy), Handle Set (Buy) → 3 sell-capable,
-    4 buy-capable.
+  - **5 finished goods** (one `[[BOM]]` each, `"Sell"`): Sliding Window (Pcs, 8500),
+    Fixed Window (Pcs, 6200), Casement Window (Pcs, 7400), Glass Door (Pcs, 12000),
+    Ventilator (Pcs, 3200).
+  - **10 raw materials** (`"Both"`): Aluminium Section (Kg, 800), Glass Panel (Sqft, 1500),
+    Handle Set (Set, 220), Hinge (Pcs, 90), Door Lock (Pcs, 450), Float Glass (Sqft, 960),
+    Rubber Gasket (Metres, 150), Silicone Sealant (Pcs, 180), Screws (Nos, 40),
+    Weather Strip (Metres, 120).
+  - e.g. Sliding Window ← Float Glass, Aluminium Section, Rubber Gasket, Handle Set;
+    Glass Door ← Glass Panel, Door Lock, Aluminium Section, Weather Strip; etc. →
+    15 unique items = 5 Sell + 10 Both (15 sell-capable, 10 buy-capable).
 - *Lamp manufacturer* → suppliers: "Greece Traders LLP", "Filament Supplies Pvt Ltd";
   buyer: "Skyline Lighting Pvt Ltd"; both: "Hardware Mart LLP".
-  - BOM #1: 1 Dozen Lamp (Sell, 8000) ← 100 Gms Greece (Buy, 80), 12 Pcs Bulb (Both, 240),
-    1 Pcs Lamp Shade (Buy, 150).
-  - BOM #2: 1 Pcs Table Lamp (Sell, 1200) ← 1 Pcs Bulb (Both, 20, reused),
-    0.3 Kg Filament (Buy, 320).
-  - 6 unique items: Lamp (Sell), Table Lamp (Sell), Greece (Buy), Bulb (Both),
-    Lamp Shade (Buy), Filament (Buy) → 3 sell-capable, 4 buy-capable.
-- *Lamp manufacturer (multi-level)* → suppliers: "Filament Supplies Pvt Ltd", "Lamp
-  Components Co"; buyer: "Skyline Lighting Pvt Ltd"; both: "Hardware Mart LLP".
-  - BOM #1 (child, listed first): 1 Pcs **Bulb Assembly** (Both, 300) ← 1 Pcs Bulb
-    (Both, 20), 0.3 Kg Filament (Buy, 320).
-  - BOM #2 (parent): 1 Pcs Table Lamp (Sell, 1200) ← 1 Pcs **Bulb Assembly**
-    (`child_bom = true`, Both, 300), 1 Pcs Lamp Base (Buy, 90), 1 Pcs Lamp Shade (Buy, 150).
-  - 6 unique items: Bulb Assembly (Both), Bulb (Both), Filament (Buy), Table Lamp (Sell),
-    Lamp Base (Buy), Lamp Shade (Buy) → 3 sell-capable, 5 buy-capable. The Table Lamp's
-    Bulb Assembly RM links to BOM #1 as a child BOM.
+  - **5 finished goods** (`"Sell"`): Table Lamp (Pcs, 1200), Floor Lamp (Pcs, 3400),
+    Pendant Lamp (Pcs, 2100), Wall Lamp (Pcs, 1600), Desk Lamp (Pcs, 900).
+  - **10 raw materials** (`"Both"`): Bulb (Pcs, 20), Lamp Shade (Pcs, 150), Switch (Pcs, 35),
+    Lamp Base (Pcs, 90), Wire Spool (Metres, 60), Filament (Kg, 320), Greece (Gms, 80),
+    Screws (Nos, 40), Solder (Pcs, 110), Insulation Tape (Pcs, 25).
+  - Wire each lamp to a few of these so all 10 raw materials appear → 15 unique items
+    (5 Sell + 10 Both).
+- *Lamp manufacturer (multi-level)* → same counter-parties as above.
+  - Make one raw material double as a published sub-assembly: author **Bulb Assembly** as the
+    `[BOM.FG]` of an earlier `[[BOM]]` block (← Bulb, Filament, Solder), then link it into a later
+    lamp's `[[BOM.RM]]` via `child_bom = true`. A sub-assembly is both manufactured *and* consumed,
+    so it is the one item typed `"Both"` rather than `"Sell"`; it counts as one of the 10 `"Both"`
+    items, adding one extra `[[BOM]]` block (six total) while the deduped set stays at 15 items.
+    (Note: a `"Both"` finished-good-style item is the shape suspected of tripping the BOM-create
+    endpoint — prefer flat BOMs until that's resolved.) Only offer this when the teammate opts in.
 
 Show the generated names + BOM(s) to the teammate so they can accept, edit individual entries,
 or override entirely. If they decline to give an industry, fall back to template defaults for
@@ -268,15 +292,16 @@ want one of the finished goods to be used as a raw material inside another BOM (
 nested sub-assembly), briefly explaining what that demonstrates. If they say yes, restructure the
 recipes so the intermediate good is the `[BOM.FG]` of an earlier `[[BOM]]` block and is linked via
 `child_bom = true` on the parent's `[[BOM.RM]]` row (see the multi-level rules and example above),
-still within the 6-item / ≥3-sell / ≥3-buy budget. If they decline, proceed with the flat BOM(s).
+still within the 15-item budget (5 `"Sell"` FGs + 10 `"Both"` RMs). If they decline, proceed with
+the flat BOM(s).
 
 ### Step 4 — Confirm the final seed values with the user
 
 Before running anything, print a clean summary of every value that will be written to `data.md`,
 covering: credentials, company profile, owner contact, counter-party company names, the
 `[[BOM]]` recipe(s) — for each, the `[BOM.FG]` finished good and every `[[BOM.RM]]` raw
-material (qty, unit, name, price-for-qty, type) — and the company logo (`LOGO_PATH`, or
-"none — logo step skipped" when empty). Mark which values came from the user vs. which fell back to defaults. **Do not include any
+material (qty, unit, name, price-for-qty, type) — and the company logo (`LOGO_PATH` file, or
+`COMPANY_WEBSITE` to fetch from, or "none — logo step skipped" when both are empty). Mark which values came from the user vs. which fell back to defaults. **Do not include any
 constants from the Python scripts** (contact first/last names, phones, addresses inside the
 counter-parties, etc.) — they are not user-facing. **Do not include `BASE_URL`** in the summary
 unless the teammate explicitly overrode it with a specific URL — in that case show the overridden
@@ -293,10 +318,14 @@ other than a single fenced toml block.
 
 ### Step 6 — Run scripts in order
 
-Run each script with `python3`, **strictly in numeric order**. Each script depends on the previous
-step's server-side state, so do not parallelise and do not skip. **`004_create_bom.py` now runs
-immediately after the inventory step (`003_…`)** — the BOM relies on the inventory items and units
-that 003 seeded, and every downstream sales/purchase script assumes the BOM already exists.
+Run each script with `python3`, **strictly in numeric order**. Do not parallelise. Scripts
+`000`–`003` are **hard prerequisites** — each depends on the previous step's server-side state
+(account → counter-parties → units → inventory items), so do not skip them. **`004_create_bom.py`
+runs immediately after the inventory step (`003_…`)** because the BOM relies on the inventory items
+and units that 003 seeded. **However, the BOM is NOT a dependency for any later script** — the
+downstream sales / purchase / enquiry / quotation scripts (`005`–`013`) build their documents from
+the inventory items (`003`) and counter-parties (`001`) only, never from the BOM. So a BOM failure
+must not stop them (see **"BOM creation is non-fatal"** below).
 
 ```
 python3 scripts/000_account_setup.py
@@ -315,32 +344,57 @@ python3 scripts/012_create_three_sales_quotations_with_deal_status.py
 python3 scripts/013_upload_company_logo.py
 ```
 
-`013_upload_company_logo.py` is a no-op when `LOGO_PATH` is empty in `data.md` — it logs that the
-upload was skipped and exits `0`, so it is safe to always include in the run order.
+`013_upload_company_logo.py` is a no-op when **both** `LOGO_PATH` and `COMPANY_WEBSITE` are empty in
+`data.md` (and it also exits `0` if a website fetch finds no usable logo) — it logs that the upload
+was skipped, so it is safe to always include in the run order.
 
-**Throttle-safe pacing.** After each script exits cleanly, **sleep 10 seconds** before launching
-the next one. This keeps the burst of API calls well under the Tranzact backend's per-minute rate
-limit and avoids the 429-style throttling errors that otherwise hit around the 5th or 6th script.
-Use `time.sleep(10)` in the runner, or shell out a `sleep 10` between invocations — either is
-fine. Do not skip the wait, even when running on a fast box.
+**Throttle-safe pacing.** After each script exits cleanly, **sleep 3 seconds** before launching the
+next one. The scripts now handle rate-limiting *internally* — each API call retries the single
+throttled request with exponential backoff (3/6/12/24s, honoring `Retry-After`) — so a heavy 60s
+between-script wait is no longer needed; a short 3s spacer is enough. Use `time.sleep(3)` in the
+runner (or a `sleep 3` between invocations). Don't drop it to zero — a small spacer still smooths
+the burst — but don't inflate it back to 10s either.
 
-**Handling throttle / rate-limit errors.** If a script fails with a throttling response (HTTP
-status `429`, or the body contains phrases like "throttled", "rate limit", "too many requests"),
-do **not** treat it as a fatal failure. Instead:
+**Handling throttle / rate-limit errors.** Because every script now retries throttled calls
+in-process (per-call backoff, up to 4 retries), a transient 429 no longer surfaces as a script
+failure — you'll just see `throttled (429) ... backoff Ns` log lines while it self-recovers. Only
+if a script still **exits non-zero** with a throttling message (i.e. it exhausted its in-process
+retries) treat it as a rate-limit failure:
 
-1. Look for a wait hint in the response: the `Retry-After` header (seconds or HTTP-date), or a
-   field in the JSON body such as `retry_after`, `wait_seconds`, or a message like `"available in
-   42 seconds"`. Parse out the number of seconds.
-2. If a hint is present, sleep for that many seconds (round up, add a 2-second cushion).
-3. If no hint is present, sleep for **60 seconds**.
-4. Re-run the **same** script (do not skip ahead). Resume the normal 10-second cadence after it
-   succeeds.
-5. If the same script throttles twice in a row even after waiting, stop and report it to the
-   teammate — the backend may be in degraded mode.
+1. Look for a wait hint in the response: the `Retry-After` header, or a JSON field such as
+   `retry_after` / `wait_seconds`, or a message like `"available in 42 seconds"`.
+2. Sleep for that many seconds (round up, +2s cushion), or **30 seconds** if no hint.
+3. Re-run the **same** script (do not skip ahead), then resume the normal 3-second cadence.
+4. If the same script throttles to failure twice in a row even after waiting, stop and report it —
+   the backend may be in degraded mode.
 
-Halt on the first non-zero exit code **that isn't a throttling error**. Show the failing script's
-stderr/stdout tail to the teammate and stop — do not patch, retry, or skip ahead. Surface the
-failing step number so they can report it.
+**Two failure tiers — prerequisites (`000`–`003`) are fatal; document steps (`004`–`013`) are each
+non-fatal.** The run splits cleanly in two:
+
+- **`000`–`003` are hard prerequisites** (account → counter-parties → units → inventory items). Every
+  later step reads this shared state, so if any of `000`–`003` fails, **halt** — show the failing
+  script's stderr/stdout tail and stop. Nothing downstream can work without them.
+- **`004`–`013` are mutually independent.** Each one builds its own documents (BOM, OCs, POs,
+  Inwards, Invoices, QIRs, SEs, SQs, logo) from the shared items (`003`) and counter-parties (`001`)
+  — **none of them reads another's output** (verified live: OC, PO, Inward, Invoice and SQ all
+  create fine on an account where the BOM/QIR/SE steps never ran). So a failure in one **must not**
+  abort the others.
+
+Therefore, **whenever any of `004`–`013` exits non-zero for a reason other than throttling**
+(examples: **HTTP 426 `PremiumFeatureException`** — a premium feature is off, keys `bom`/`grn-qir`/
+`ncd` for `004`/`010`/`011`; **HTTP 500 `"Something went wrong!"`** — a backend error, seen on `004`
+`/production/bom/create/` in production; a timeout; anything else):
+
+1. Log the note **prominently, with the real error** — e.g. *"⚠️ Step `004_create_bom.py` FAILED
+   (HTTP 500 — Something went wrong!) — skipped. The remaining steps don't depend on it; continuing.
+   Re-run this step later once the cause is resolved."* Show the actual status code / message so the
+   failure is **visible, not silently swallowed**.
+2. **Continue with the next script** (resume the normal 3-second cadence). Do **not** re-run it.
+3. Remember which steps were skipped so they all surface in the Step 7 report.
+
+So the only thing that halts the run is a failure in a **prerequisite** (`000`–`003`) or a
+**throttling** failure that a script couldn't self-recover from. Any `004`–`013` failure is skipped,
+logged, and reported — you get as much of the demo as the backend allows, never an empty account.
 
 If `requests` is somehow missing from the sandbox (shouldn't happen, but possible on certain
 locked-down deployments), `pip install requests` inside the sandbox and retry. Do **not** ask the
@@ -361,8 +415,14 @@ If — and only if — the teammate overrode the base URL with a specific value,
 `Base URL: <BASE_URL>` line to the summary so they know which env the scripts ran against. When the
 default template base URL was used, omit it entirely.
 
-Mention the three OCs, units, and inventory were seeded. If a logo was provided, note it was
-uploaded; if `LOGO_PATH` was empty, note the account has no logo.
+Mention the OCs, units, and inventory were seeded. For the logo: if a `LOGO_PATH` file was
+uploaded, note it; if the logo was fetched from `COMPANY_WEBSITE`, say so; if neither was provided
+(or the website yielded no image), note the account has no logo. **List every document step
+(`004`–`013`) that was skipped, with the reason** — e.g. *"⚠️ Skipped: BOM (004) — HTTP 500 backend
+error; QIR chain (010) & Sales Enquiries (011) — premium feature not enabled. Everything else was
+seeded. Re-run those scripts later once the cause/feature is resolved."* — so the teammate knows
+exactly what's on the account and what can be added, and whether a skip was a premium gate or a real
+backend error worth reporting.
 
 ## Hard rules
 
@@ -384,9 +444,11 @@ uploaded; if `LOGO_PATH` was empty, note the account has no logo.
    names, BOM recipes (finished good + raw materials), units, and prices. Do not mix items from
    unrelated industries. The `[[BOM]]` blocks are the sole source of truth for which inventory
    items and UoMs end up on the account — there is no separate `INVENTORY_ITEMS` config.
-   **Cap the seed at one or at most two `[[BOM]]` blocks resolving to exactly 6 unique items**,
-   while still meeting the downstream minimums (≥3 sell-capable, ≥3 buy-capable — a `"Both"`
-   item counts for both).
+   **Cap the seed at exactly 15 unique items — 5 finished goods typed `"Sell"` + 10 raw materials
+   typed `"Both"`** (typically five `[[BOM]]` blocks — one per finished good — plus at most one
+   extra block for a nested sub-assembly). That gives 15 sell-capable and 10 buy-capable items.
+   Keep finished goods `"Sell"` (not `"Both"`) — a purchasable finished good has been seen to trip
+   the BOM-create endpoint.
 5. **Always confirm the full seed-value summary before execution.** Print every value about to be
    written to `data.md`, mark user-supplied vs. default, and wait for explicit go-ahead.
 6. **Never run the scripts out of order or in parallel.** Each step assumes the prior step's
@@ -415,19 +477,40 @@ uploaded; if `LOGO_PATH` was empty, note the account has no logo.
   buyable product with a delivery location configured.
 - **SE/SQ steps (011–012) fail with "Need at least 3 sell-side products with a GST tax mapping"** →
   the BOM didn't include enough sell-capable items. Re-run from `000_` with a fresh email and a
-  BOM that has **≥3 items of type `Sell` or `Both`** across the recipes — within the 6-item cap,
-  the easiest way is two `[[BOM]]` blocks (two `Sell` FGs) plus one shared raw material typed
-  `Both`. 003 auto-attaches GST, so as long as the account has a GST master under
+  BOM that follows the standard seed — **all 15 items typed `Both`** gives 15 sell-capable
+  items, well above the ≥3 the script needs. 003 auto-attaches GST, so as long as
+  the account has a GST master under
   Settings → Tax Options, every item created will carry one.
 - **PO steps (008–009) fail with "Need 2 buyable goods for supplier"** → the BOM had fewer than
-  2 buy-capable items. Ensure **≥3 items of type `Buy` or `Both`** across the recipes (a `Both`
-  item counts) so there is comfortable margin, then re-run from `000_` with a fresh email.
+  2 buy-capable items. Ensure the standard seed — **all 15 items typed `Both`** gives 15
+  buy-capable goods, comfortable margin — then re-run from `000_` with a fresh
+  email.
 - **003 fails with "No GST tax master found on the company"** → the account doesn't have GST
   enabled in Settings → Tax Options. Toggle on GST 18% (or any GST rate) and re-run from `003_`.
+- **Any document step (`004`–`013`) fails** → those steps are mutually independent, so **any
+  failure among `004`–`013` is non-fatal** — do NOT abort the run. Log the real error, skip that
+  step, and continue with the next one. (A failure in a **prerequisite** `000`–`003` is different —
+  that halts, since everything downstream needs it.) Common causes:
+  - **HTTP 426 / `PremiumFeatureException`** — a premium feature isn't enabled (keys: `004` = `bom`,
+    `010` = `grn-qir`, `011` = `ncd`). Enable it on the account, then re-run just that script.
+  - **HTTP 500 `"Something went wrong!"`** — seen on `004` (`/production/bom/create/`) on some
+    environments (production). This is a backend-side error, not a data problem; report it to the
+    Tranzact team (see the isolation step below) and re-run `004` once it's fixed.
+  Note the skipped steps in the final report; no need to re-run from `000_` to add them later.
+- **BOM (`004`) 500 — how to isolate whether it's Tranzact's bug or our data** → before blaming the
+  endpoint, on an env where the create is reachable, test a **flat BOM whose finished good is typed
+  `Sell`** (not `Both`). If the `Sell`-FG BOM succeeds where the all-`Both` one 500s, the fix is on
+  our side (finished goods shouldn't be `Both`); if it still 500s, capture the full response body /
+  server trace and hand it to Tranzact engineering.
 - **013 logo step fails with "LOGO_PATH file not found"** → the path in `data.md` doesn't resolve
   inside the sandbox. Confirm the image was uploaded to the chat and use its actual sandbox path,
-  or clear `LOGO_PATH` to skip the logo. The rest of the account is already seeded — just re-run
-  `013_` after fixing the path; do not re-run from `000_`.
+  set `COMPANY_WEBSITE` instead to fetch the logo from the company's website, or clear `LOGO_PATH`
+  to skip the logo. The rest of the account is already seeded — just re-run `013_` after fixing the
+  path; do not re-run from `000_`.
+- **013 logo via `COMPANY_WEBSITE` didn't upload a logo** → the fetch is best-effort and non-fatal;
+  the run continues without a logo. Causes: the site blocked the request, exposes no
+  apple-touch-icon / icon / og:image / favicon, or the sandbox can't reach external sites. Provide
+  a `LOGO_PATH` image file instead, or a different/more logo-friendly URL, and re-run `013_`.
 - **Connection refused / DNS error hitting `BASE_URL`** → confirm the env URL is correct and the
   Tranzact backend is up; sandbox cannot reach private/VPN-only hosts.
 - **`ModuleNotFoundError: requests`** → run `pip install requests` inside the sandbox and retry.
