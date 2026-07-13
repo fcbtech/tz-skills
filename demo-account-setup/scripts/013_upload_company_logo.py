@@ -15,13 +15,10 @@ Flow:
     The backend converts the image to WebP and stores it on the company.
   - Verify the response echoes image_of=own_company with a company_image path.
 
-Logo source, in priority order:
-  1. LOGO_PATH in data.md — a local image file (png/jpg/webp/…).
-  2. COMPANY_WEBSITE in data.md — if no usable file is given, best-effort
-     fetch a logo from the company website (apple-touch-icon / sized icon /
-     og:image / favicon), download it, and upload that.
-If neither is set (or the website yields no usable image), the upload is
-skipped (the script exits 0 without failing the run).
+Logo source: LOGO_PATH in data.md. If LOGO_PATH is empty, the upload is
+skipped (the script exits 0 without calling the API). When only a company
+website is known, the calling agent fetches a logo from it, saves it to a
+file, and points LOGO_PATH at that file before this script runs.
 
 See the cataloged endpoint:
   qa/.ai/memory/knowledge/endpoints/profile-pic-upload-v3.md
@@ -29,7 +26,6 @@ See the cataloged endpoint:
 
 from __future__ import annotations
 
-import html
 import logging
 import re
 import sys
@@ -37,7 +33,6 @@ import time
 import tomllib
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin
 
 import requests
 
@@ -64,10 +59,6 @@ TIMEOUT = 30
 # own logo (enforces ownership server-side). company = a counterparty image,
 # user = the user's profile picture.
 IMAGE_OF = "own_company"
-
-# Best-effort website logo fetch (used only when no LOGO_PATH file is available).
-_WEBSITE_UA = {"User-Agent": "Mozilla/5.0 (compatible; TranzactDemoBot/1.0)"}
-_LOGO_IMG_EXT = {"png", "jpg", "jpeg", "webp", "gif", "ico", "svg"}
 
 # Multipart requests must NOT carry a manual Content-Type — requests sets the
 # boundary itself. So this header set omits Content-Type on purpose.
@@ -156,105 +147,22 @@ def fetch_company_uuid(token: str) -> str:
 # --- Logo bytes -------------------------------------------------------------
 
 
-def _fetch_logo_from_website(url: str) -> tuple[str, bytes, str] | None:
-    """Best-effort: fetch a logo image from a company website.
-
-    Parses the homepage for logo candidates and returns the first that
-    downloads as a real image, preferring the cleanest logo mark:
-    apple-touch-icon → sized `<link rel=icon>` → og:image / twitter:image →
-    small favicon → `/favicon.ico`. Returns (filename, bytes, content_type),
-    or None if nothing usable is found. Network/parse errors propagate to the
-    caller, which treats the logo as skippable.
-    """
-    if not re.match(r"^https?://", url, re.I):
-        url = "https://" + url
-    log.info("No logo file — fetching logo from website: %s", url)
-    resp = requests.get(url, headers=_WEBSITE_UA, timeout=TIMEOUT)
-    resp.raise_for_status()
-    page, base = resp.text, resp.url
-
-    def _size(tag: str) -> int:
-        m = re.search(r'sizes=["\'](\d+)x\d+["\']', tag, re.I)
-        return int(m.group(1)) if m else 0
-
-    # (priority, -size, href) — lower priority number is tried first.
-    scored: list[tuple[int, int, str]] = []
-    for m in re.finditer(r'<link[^>]+rel=["\'][^"\']*apple-touch-icon[^"\']*["\'][^>]*>', page, re.I):
-        h = re.search(r'href=["\']([^"\']+)["\']', m.group(0), re.I)
-        if h:
-            scored.append((1, -_size(m.group(0)), h.group(1)))
-    for m in re.finditer(r'<link[^>]+rel=["\'][^"\']*icon[^"\']*["\'][^>]*>', page, re.I):
-        h = re.search(r'href=["\']([^"\']+)["\']', m.group(0), re.I)
-        if h:
-            sz = _size(m.group(0))  # big icons (>=64px) beat og:image; small favicons come after
-            scored.append((2 if sz >= 64 else 4, -sz, h.group(1)))
-    for m in re.finditer(r'<meta[^>]+(?:property|name)=["\'](?:og:image(?::secure_url)?|twitter:image)["\'][^>]*>', page, re.I):
-        c = re.search(r'content=["\']([^"\']+)["\']', m.group(0), re.I)
-        if c:
-            scored.append((3, 0, c.group(1)))
-    scored.append((5, 0, "/favicon.ico"))
-    scored.sort(key=lambda t: (t[0], t[1]))
-
-    tried: set[str] = set()
-    for _prio, _neg, href in scored:
-        img_url = urljoin(base, html.unescape(href))
-        if img_url in tried:
-            continue
-        tried.add(img_url)
-        try:
-            r = requests.get(img_url, headers=_WEBSITE_UA, timeout=TIMEOUT)
-        except requests.RequestException:
-            continue
-        if not r.ok or not r.content:
-            continue
-        ctype = (r.headers.get("Content-Type") or "").split(";")[0].strip().lower()
-        ext = img_url.lower().rsplit(".", 1)[-1].split("?")[0]
-        if not ctype.startswith("image/"):
-            if ext not in _LOGO_IMG_EXT:
-                continue  # not an image (e.g. an HTML error page) — skip
-            ctype = "image/" + ("jpeg" if ext == "jpg" else ext)
-        name = (img_url.rsplit("/", 1)[-1].split("?")[0]) or "logo"
-        log.info("Selected website logo: %s (%s, %d bytes)", img_url, ctype, len(r.content))
-        return name, r.content, ctype
-    return None
-
-
-def resolve_logo(logo_path: str, website: str) -> tuple[str, bytes, str] | None:
-    """Resolve logo bytes from an explicit file, else from the company website.
-
-    Priority: (1) LOGO_PATH file if it exists; (2) COMPANY_WEBSITE fetch.
-    Returns (filename, bytes, content_type), or None when no logo can be
-    resolved (the caller then skips the upload without failing the run).
-    """
-    if logo_path:
-        path = Path(logo_path).expanduser()
-        if path.is_file():
-            suffix = path.suffix.lower().lstrip(".") or "png"
-            content_type = "image/jpeg" if suffix in {"jpg", "jpeg"} else f"image/{suffix}"
-            log.info("Using logo file %s", path)
-            return path.name, path.read_bytes(), content_type
-        if not website:
-            sys.exit(f"LOGO_PATH file not found: {path}")
-        log.warning("LOGO_PATH file not found (%s); falling back to COMPANY_WEBSITE.", path)
-
-    if website:
-        try:
-            logo = _fetch_logo_from_website(website)
-        except Exception as exc:  # best-effort — never fail the run over a logo
-            log.warning("Could not fetch logo from website %r: %s", website, exc)
-            return None
-        if logo is None:
-            log.warning("No usable logo image found on website %r.", website)
-        return logo
-
-    return None
+def resolve_logo() -> tuple[str, bytes, str]:
+    """Return (filename, bytes, content_type) for the logo file at LOGO_PATH."""
+    path = Path((DATA.get("LOGO_PATH") or "").strip()).expanduser()
+    if not path.is_file():
+        sys.exit(f"LOGO_PATH file not found: {path}")
+    suffix = path.suffix.lower().lstrip(".") or "png"
+    content_type = "image/jpeg" if suffix in {"jpg", "jpeg"} else f"image/{suffix}"
+    log.info("Using logo file %s", path)
+    return path.name, path.read_bytes(), content_type
 
 
 # --- Business flow ----------------------------------------------------------
 
 
-def upload_logo(token: str, company_uuid: str, logo: tuple[str, bytes, str]) -> dict:
-    filename, image_bytes, content_type = logo
+def upload_logo(token: str, company_uuid: str) -> dict:
+    filename, image_bytes, content_type = resolve_logo()
     url = f"{BASE_URL}/api/v3/profile/company/profile-pic-upload/{company_uuid}"
     log.info(">>> PUT /api/v3/profile/company/profile-pic-upload/%s", company_uuid)
     response = _send(
@@ -277,19 +185,13 @@ def upload_logo(token: str, company_uuid: str, logo: tuple[str, bytes, str]) -> 
 
 def main() -> None:
     log.info("=== Upload company logo ===")
-    logo_path = (DATA.get("LOGO_PATH") or "").strip()
-    website = (DATA.get("COMPANY_WEBSITE") or "").strip()
-    if not logo_path and not website:
-        log.info("No LOGO_PATH or COMPANY_WEBSITE in data.md — skipping logo upload.")
+    if not (DATA.get("LOGO_PATH") or "").strip():
+        log.info("LOGO_PATH is empty in data.md — skipping logo upload.")
         return
 
     token = login()
     company_uuid = fetch_company_uuid(token)
-    logo = resolve_logo(logo_path, website)
-    if logo is None:
-        log.info("No logo could be resolved — skipping logo upload (non-fatal).")
-        return
-    result = upload_logo(token, company_uuid, logo)
+    result = upload_logo(token, company_uuid)
 
     if result.get("image_of") != IMAGE_OF:
         sys.exit(f"Unexpected image_of in response: {result!r}")

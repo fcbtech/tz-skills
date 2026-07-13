@@ -67,10 +67,9 @@ After a successful run the demo account will have:
    series. The BOM step is **non-fatal**: if it fails for **any** reason (the `bom` premium feature
    not enabled → HTTP 426, or a backend error → HTTP 500), it is **skipped** and everything else is
    still created — the BOM can be added later by re-running `004` once the cause is resolved.
-10. **(Optional)** The company logo — from `LOGO_PATH` (an image file) if set, otherwise
-    best-effort fetched from `COMPANY_WEBSITE` (the site's apple-touch-icon / icon / og:image /
-    favicon). If both are empty (or the website yields no usable image), the logo step is skipped
-    (non-fatal) and the account is set up without a logo.
+10. **(Optional)** The company logo, uploaded from the image file at `LOGO_PATH` — either one the
+    teammate supplied, or one the agent fetched from the company website and saved during setup.
+    If `LOGO_PATH` is empty the logo step is skipped (non-fatal) and the account has no logo.
 
 The teammate gets a printable email + password to hand to the demo audience.
 
@@ -112,8 +111,7 @@ surface the base URL used in the final credentials report (Step 7); otherwise ne
 | `BUYER_COMPANY_NAME`    | Counter-party (Buyer) name             | `data.md.template`        |
 | `BOTH_COMPANY_NAME`     | Counter-party (Both) name              | `data.md.template`        |
 | `BOM`                   | Bill(s) of materials — sole source of inventory items + UoMs | `data.md.template` |
-| `LOGO_PATH`             | Optional path to a logo image in the sandbox (preferred logo source) | `data.md.template` (empty) |
-| `COMPANY_WEBSITE`       | Optional company website URL; used only when `LOGO_PATH` has no file — step 013 fetches the logo from the site | `data.md.template` (empty) |
+| `LOGO_PATH`             | Optional path to a logo image in the sandbox; empty ⇒ logo step skipped | `data.md.template` (empty) |
 
 Always confirm `EMAIL` is unique on the target env — duplicate emails fail the signup.
 
@@ -150,14 +148,16 @@ first giving the teammate a chance to provide one. Group related fields into sin
    `STATE`, `COUNTRY`.
 4. **Owner contact** — `FIRST_NAME`, `LAST_NAME`, `CONTACT_NO` (10 digits, no `+91`).
 5. **Counter-parties + inventory** (industry-derived, see below).
-6. **Company logo (optional)** — `LOGO_PATH` and/or `COMPANY_WEBSITE`. Ask whether the teammate
-   wants a company logo on the account. There are two ways to supply one:
-   - **An image file** — the path to a png/jpg/webp available in the sandbox (e.g. one they
-     uploaded to the chat). Set `LOGO_PATH`. This is preferred when available.
-   - **A company website** — if they don't have a file but can give the company's website URL,
-     set `COMPANY_WEBSITE` (e.g. `https://acme.com`). Step 013 will best-effort fetch the logo
-     from that site (apple-touch-icon / icon / og:image / favicon) and upload it.
-   `LOGO_PATH` wins if both are given. If they decline or provide neither, leave both empty — the
+6. **Company logo (optional)** — `LOGO_PATH`. Ask whether the teammate wants a company logo on the
+   account. Two ways to get one, both ending in a `LOGO_PATH` file that step 013 uploads:
+   - **An image file** — the teammate gives the path to a png/jpg/webp in the sandbox (e.g. one
+     they uploaded to the chat). Set `LOGO_PATH` to it.
+   - **A company website** — if they have no file but can give the company's website URL, **you
+     (the agent) fetch the logo from that site yourself** using your web/browser tools: find the
+     brand logo, download it, save it to a file in the sandbox, and set `LOGO_PATH` to that file.
+     (Do this during setup, before running 013 — the script only uploads whatever `LOGO_PATH`
+     points at; it does not fetch anything itself.)
+   If they decline or provide neither a file nor a reachable site, leave `LOGO_PATH` empty — the
    logo step is then skipped (non-fatal). Never generate or substitute a placeholder image.
 
 For each value the teammate provides, replace the template default in memory. Only when the
@@ -300,8 +300,8 @@ the flat BOM(s).
 Before running anything, print a clean summary of every value that will be written to `data.md`,
 covering: credentials, company profile, owner contact, counter-party company names, the
 `[[BOM]]` recipe(s) — for each, the `[BOM.FG]` finished good and every `[[BOM.RM]]` raw
-material (qty, unit, name, price-for-qty, type) — and the company logo (`LOGO_PATH` file, or
-`COMPANY_WEBSITE` to fetch from, or "none — logo step skipped" when both are empty). Mark which values came from the user vs. which fell back to defaults. **Do not include any
+material (qty, unit, name, price-for-qty, type) — and the company logo (`LOGO_PATH`, or
+"none — logo step skipped" when empty). Mark which values came from the user vs. which fell back to defaults. **Do not include any
 constants from the Python scripts** (contact first/last names, phones, addresses inside the
 counter-parties, etc.) — they are not user-facing. **Do not include `BASE_URL`** in the summary
 unless the teammate explicitly overrode it with a specific URL — in that case show the overridden
@@ -344,9 +344,8 @@ python3 scripts/012_create_three_sales_quotations_with_deal_status.py
 python3 scripts/013_upload_company_logo.py
 ```
 
-`013_upload_company_logo.py` is a no-op when **both** `LOGO_PATH` and `COMPANY_WEBSITE` are empty in
-`data.md` (and it also exits `0` if a website fetch finds no usable logo) — it logs that the upload
-was skipped, so it is safe to always include in the run order.
+`013_upload_company_logo.py` is a no-op when `LOGO_PATH` is empty in `data.md` — it logs that the
+upload was skipped and exits `0`, so it is safe to always include in the run order.
 
 **Throttle-safe pacing.** After each script exits cleanly, **sleep 3 seconds** before launching the
 next one. The scripts now handle rate-limiting *internally* — each API call retries the single
@@ -415,9 +414,9 @@ If — and only if — the teammate overrode the base URL with a specific value,
 `Base URL: <BASE_URL>` line to the summary so they know which env the scripts ran against. When the
 default template base URL was used, omit it entirely.
 
-Mention the OCs, units, and inventory were seeded. For the logo: if a `LOGO_PATH` file was
-uploaded, note it; if the logo was fetched from `COMPANY_WEBSITE`, say so; if neither was provided
-(or the website yielded no image), note the account has no logo. **List every document step
+Mention the OCs, units, and inventory were seeded. For the logo: if one was uploaded (from a
+supplied file, or one you fetched from the company website), note it; if `LOGO_PATH` was empty,
+note the account has no logo. **List every document step
 (`004`–`013`) that was skipped, with the reason** — e.g. *"⚠️ Skipped: BOM (004) — HTTP 500 backend
 error; QIR chain (010) & Sales Enquiries (011) — premium feature not enabled. Everything else was
 seeded. Re-run those scripts later once the cause/feature is resolved."* — so the teammate knows
@@ -503,14 +502,9 @@ backend error worth reporting.
   our side (finished goods shouldn't be `Both`); if it still 500s, capture the full response body /
   server trace and hand it to Tranzact engineering.
 - **013 logo step fails with "LOGO_PATH file not found"** → the path in `data.md` doesn't resolve
-  inside the sandbox. Confirm the image was uploaded to the chat and use its actual sandbox path,
-  set `COMPANY_WEBSITE` instead to fetch the logo from the company's website, or clear `LOGO_PATH`
-  to skip the logo. The rest of the account is already seeded — just re-run `013_` after fixing the
-  path; do not re-run from `000_`.
-- **013 logo via `COMPANY_WEBSITE` didn't upload a logo** → the fetch is best-effort and non-fatal;
-  the run continues without a logo. Causes: the site blocked the request, exposes no
-  apple-touch-icon / icon / og:image / favicon, or the sandbox can't reach external sites. Provide
-  a `LOGO_PATH` image file instead, or a different/more logo-friendly URL, and re-run `013_`.
+  inside the sandbox. Confirm the image (a supplied file, or one you fetched from the company
+  website and saved) is at that path, or clear `LOGO_PATH` to skip the logo. The rest of the
+  account is already seeded — just re-run `013_` after fixing the path; do not re-run from `000_`.
 - **Connection refused / DNS error hitting `BASE_URL`** → confirm the env URL is correct and the
   Tranzact backend is up; sandbox cannot reach private/VPN-only hosts.
 - **`ModuleNotFoundError: requests`** → run `pip install requests` inside the sandbox and retry.

@@ -24,13 +24,11 @@ BUYER_COMPANY_NAME = "Herbal Products Private Limited"
 BOTH_COMPANY_NAME = "Quantum Traders LLP"
 
 # --- Company logo (optional) ---
-# Path to a logo image file (png/jpg/webp) in the sandbox. Preferred source.
+# Path to a logo image file (png/jpg/webp) in the sandbox. If empty, the
+# logo-upload step (013) is skipped. When only a company website is known,
+# the agent fetches a logo from it, saves it to a file, and sets LOGO_PATH
+# to that file before running 013.
 LOGO_PATH = ""
-# Company website URL — used ONLY when LOGO_PATH has no usable file. Step 013
-# then best-effort fetches the company logo (apple-touch-icon / sized icon /
-# og:image / favicon) from this site and uploads it. If BOTH are empty, the
-# logo step is skipped and the account is set up without a logo.
-COMPANY_WEBSITE = ""
 
 
 # --- Bill of Materials ---
