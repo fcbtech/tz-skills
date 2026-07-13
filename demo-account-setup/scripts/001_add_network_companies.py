@@ -16,7 +16,6 @@ from __future__ import annotations
 import logging
 import re
 import sys
-import time
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -121,34 +120,6 @@ COMPANIES: list[dict] = [
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger("automation")
 
-# --- Throttle-aware retry (per-call backoff on HTTP 429) --------------------
-
-_THROTTLE_RETRIES = 4
-_THROTTLE_BACKOFF = [3, 6, 12, 24]
-
-
-def _throttle_sleep(resp, method, path, attempt):
-    """Back off before retrying a rate-limited (429) request. Honors Retry-After."""
-    wait = _THROTTLE_BACKOFF[min(attempt, len(_THROTTLE_BACKOFF) - 1)]
-    retry_after = resp.headers.get("Retry-After")
-    if retry_after:
-        try:
-            wait = max(wait, int(float(retry_after)) + 2)
-        except (TypeError, ValueError):
-            pass
-    log.info("    throttled (429) on %s %s -> backoff %ss, retry %d/%d",
-             method, path, wait, attempt + 1, _THROTTLE_RETRIES)
-    time.sleep(wait)
-
-
-def _send(method, url, path_label, **kwargs):
-    """Issue a request, retrying the single call on HTTP 429 with backoff."""
-    for _tt in range(_THROTTLE_RETRIES + 1):
-        resp = requests.request(method, url, **kwargs)
-        if resp.status_code != 429 or _tt == _THROTTLE_RETRIES:
-            return resp
-        _throttle_sleep(resp, method.upper(), path_label, _tt)
-
 
 # --- Auth -------------------------------------------------------------------
 
@@ -157,10 +128,8 @@ def login() -> str:
     """POST /main/login/password-login/ → access token. Inlined; replaces core.auth.ensure_authenticated."""
     url = f"{BASE_URL}/main/login/password-login/"
     log.info(">>> POST /main/login/password-login/")
-    response = _send(
-        "POST",
+    response = requests.post(
         url,
-        "/main/login/password-login/",
         json={"email": DATA["EMAIL"], "password": DATA["PASSWORD"]},
         headers=DEFAULT_HEADERS,
         timeout=TIMEOUT,
@@ -247,7 +216,7 @@ def create_counter_party(token: str, company: dict) -> dict:
     url = f"{BASE_URL}{ENDPOINT}"
     headers = {**DEFAULT_HEADERS, "Authorization": f"Bearer {token}"}
     log.info(">>> POST %s  (%s — %s)", ENDPOINT, company["name"], company["category"])
-    response = _send("POST", url, ENDPOINT, json=payload, headers=headers, timeout=TIMEOUT)
+    response = requests.post(url, json=payload, headers=headers, timeout=TIMEOUT)
     log.info("<<< POST %s -> %d", ENDPOINT, response.status_code)
     if response.status_code >= 400:
         sys.exit(

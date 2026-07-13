@@ -347,25 +347,29 @@ python3 scripts/013_upload_company_logo.py
 `013_upload_company_logo.py` is a no-op when `LOGO_PATH` is empty in `data.md` — it logs that the
 upload was skipped and exits `0`, so it is safe to always include in the run order.
 
-**Throttle-safe pacing.** After each script exits cleanly, **sleep 3 seconds** before launching the
-next one. The scripts now handle rate-limiting *internally* — each API call retries the single
-throttled request with exponential backoff (3/6/12/24s, honoring `Retry-After`) — so a heavy 60s
-between-script wait is no longer needed; a short 3s spacer is enough. Use `time.sleep(3)` in the
-runner (or a `sleep 3` between invocations). Don't drop it to zero — a small spacer still smooths
-the burst — but don't inflate it back to 10s either.
+**Throttle-safe pacing — YOU (the agent) manage this, not the scripts.** The scripts make raw API
+calls and do **no** rate-limit handling of their own; pacing and recovery are your job. Leave a
+**few seconds between scripts** (≈3s is a fine default) to keep the burst under the backend's
+per-minute limit. Use your judgment: if you start seeing throttling, **space the scripts out more**;
+if everything's flowing, a short spacer is enough.
 
-**Handling throttle / rate-limit errors.** Because every script now retries throttled calls
-in-process (per-call backoff, up to 4 retries), a transient 429 no longer surfaces as a script
-failure — you'll just see `throttled (429) ... backoff Ns` log lines while it self-recovers. Only
-if a script still **exits non-zero** with a throttling message (i.e. it exhausted its in-process
-retries) treat it as a rate-limit failure:
+**Handling throttle / rate-limit errors — react intelligently.** The Tranzact backend rate-limits
+bursts of calls, usually surfacing as **HTTP 429** (or a body mentioning "throttled" / "rate limit"
+/ "too many requests"), most often around the 5th–6th script. When a script fails this way, do
+**not** treat it as fatal — reason about it and recover:
 
-1. Look for a wait hint in the response: the `Retry-After` header, or a JSON field such as
-   `retry_after` / `wait_seconds`, or a message like `"available in 42 seconds"`.
-2. Sleep for that many seconds (round up, +2s cushion), or **30 seconds** if no hint.
-3. Re-run the **same** script (do not skip ahead), then resume the normal 3-second cadence.
-4. If the same script throttles to failure twice in a row even after waiting, stop and report it —
-   the backend may be in degraded mode.
+1. **Wait the right amount.** Look for a hint in the response — a `Retry-After` header, a
+   `retry_after` / `wait_seconds` field, or a message like `"available in 42 seconds"` — and wait
+   that long (round up, +2s). No hint → wait ~30s. If it's already thrown twice, wait longer.
+2. **Re-run the same script** (don't skip ahead), then continue. Note that scripts aren't
+   idempotent, so a re-run redoes that script's work — prefer to *avoid* throttling by pacing over
+   leaning on re-runs, and only re-run the one script that failed.
+3. **Adapt.** If throttling keeps happening, increase the gap between scripts for the rest of the
+   run. If the *same* script throttles to failure twice in a row even after waiting, stop and report
+   it — the backend may be degraded.
+
+(Rationale: this is a skill — keep the scripts as lean, deterministic automations and let the agent
+handle situational things like rate-limiting with judgment, rather than hard-coding retry logic.)
 
 **Two failure tiers — prerequisites (`000`–`003`) are fatal; document steps (`004`–`013`) are each
 non-fatal.** The run splits cleanly in two:
@@ -391,9 +395,10 @@ Therefore, **whenever any of `004`–`013` exits non-zero for a reason other tha
 2. **Continue with the next script** (resume the normal 3-second cadence). Do **not** re-run it.
 3. Remember which steps were skipped so they all surface in the Step 7 report.
 
-So the only thing that halts the run is a failure in a **prerequisite** (`000`–`003`) or a
-**throttling** failure that a script couldn't self-recover from. Any `004`–`013` failure is skipped,
-logged, and reported — you get as much of the demo as the backend allows, never an empty account.
+So the only thing that halts the run is a failure in a **prerequisite** (`000`–`003`). A
+**throttling** failure isn't fatal either — you wait and re-run that script (see throttle handling
+above). Any `004`–`013` failure is skipped, logged, and reported — you get as much of the demo as
+the backend allows, never an empty account.
 
 If `requests` is somehow missing from the sandbox (shouldn't happen, but possible on certain
 locked-down deployments), `pip install requests` inside the sandbox and retry. Do **not** ask the

@@ -25,7 +25,6 @@ from __future__ import annotations
 import logging
 import re
 import sys
-import time
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -78,34 +77,6 @@ BANK_IFSC = "KBR3423534"
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger("automation")
 
-# --- Throttle-aware retry (per-call backoff on HTTP 429) --------------------
-
-_THROTTLE_RETRIES = 4
-_THROTTLE_BACKOFF = [3, 6, 12, 24]
-
-
-def _throttle_sleep(resp, method, path, attempt):
-    """Back off before retrying a rate-limited (429) request. Honors Retry-After."""
-    wait = _THROTTLE_BACKOFF[min(attempt, len(_THROTTLE_BACKOFF) - 1)]
-    retry_after = resp.headers.get("Retry-After")
-    if retry_after:
-        try:
-            wait = max(wait, int(float(retry_after)) + 2)
-        except (TypeError, ValueError):
-            pass
-    log.info("    throttled (429) on %s %s -> backoff %ss, retry %d/%d",
-             method, path, wait, attempt + 1, _THROTTLE_RETRIES)
-    time.sleep(wait)
-
-
-def _send(method, url, path_label, **kwargs):
-    """Issue a request, retrying the single call on HTTP 429 with backoff."""
-    for _tt in range(_THROTTLE_RETRIES + 1):
-        resp = requests.request(method, url, **kwargs)
-        if resp.status_code != 429 or _tt == _THROTTLE_RETRIES:
-            return resp
-        _throttle_sleep(resp, method.upper(), path_label, _tt)
-
 
 # --- Session state ----------------------------------------------------------
 
@@ -138,10 +109,9 @@ def call(method: str, path: str, payload: dict | None = None, authed: bool = Tru
     method = method.upper()
     url = f"{BASE_URL}{path}"
     log.info(">>> %s %s", method, path)
-    response = _send(
+    response = requests.request(
         method,
         url,
-        path,
         json=payload if method in {"POST", "PUT", "PATCH"} else None,
         headers=_headers(authed),
         timeout=TIMEOUT,

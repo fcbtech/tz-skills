@@ -141,39 +141,10 @@ def _auth_headers(token: str) -> dict[str, str]:
     return {**DEFAULT_HEADERS, "Authorization": f"Bearer {token}"}
 
 
-# --- Throttle-aware retry (per-call backoff on HTTP 429) --------------------
-
-_THROTTLE_RETRIES = 4
-_THROTTLE_BACKOFF = [3, 6, 12, 24]
-
-
-def _throttle_sleep(resp, method: str, path: str, attempt: int) -> None:
-    """Back off before retrying a rate-limited (429) request. Honors Retry-After.
-
-    Retries the SINGLE failing call rather than letting the whole script fail and
-    be re-run — that avoids the 60s wait + full re-run (and duplicate work) that
-    dominated slow runs.
-    """
-    wait = _THROTTLE_BACKOFF[min(attempt, len(_THROTTLE_BACKOFF) - 1)]
-    retry_after = resp.headers.get("Retry-After")
-    if retry_after:
-        try:
-            wait = max(wait, int(float(retry_after)) + 2)
-        except (TypeError, ValueError):
-            pass
-    log.info("    throttled (429) on %s %s -> backoff %ss, retry %d/%d",
-             method, path, wait, attempt + 1, _THROTTLE_RETRIES)
-    time.sleep(wait)
-
-
 def _get(token: str, path: str, params: dict | None = None) -> dict:
     url = f"{BASE_URL}{path}"
     log.info(">>> GET %s", path)
-    for _tt in range(_THROTTLE_RETRIES + 1):
-        r = requests.get(url, params=params, headers=_auth_headers(token), timeout=TIMEOUT)
-        if r.status_code != 429 or _tt == _THROTTLE_RETRIES:
-            break
-        _throttle_sleep(r, "GET", path, _tt)
+    r = requests.get(url, params=params, headers=_auth_headers(token), timeout=TIMEOUT)
     log.info("<<< GET %s -> %d", path, r.status_code)
     if r.status_code >= 400:
         raise RuntimeError(f"GET {path} failed (HTTP {r.status_code}): {r.text[:500]}")
@@ -183,11 +154,7 @@ def _get(token: str, path: str, params: dict | None = None) -> dict:
 def _post(token: str, path: str, payload: dict) -> dict:
     url = f"{BASE_URL}{path}"
     log.info(">>> POST %s", path)
-    for _tt in range(_THROTTLE_RETRIES + 1):
-        r = requests.post(url, json=payload, headers=_auth_headers(token), timeout=TIMEOUT)
-        if r.status_code != 429 or _tt == _THROTTLE_RETRIES:
-            break
-        _throttle_sleep(r, "POST", path, _tt)
+    r = requests.post(url, json=payload, headers=_auth_headers(token), timeout=TIMEOUT)
     log.info("<<< POST %s -> %d", path, r.status_code)
     if r.status_code >= 400:
         raise RuntimeError(f"POST {path} failed (HTTP {r.status_code}): {r.text[:500]}")
