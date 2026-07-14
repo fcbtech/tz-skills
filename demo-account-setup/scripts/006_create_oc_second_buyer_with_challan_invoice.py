@@ -5,7 +5,7 @@ adjacent to this script. Designed to be uploaded directly to a Lambda
 function (or any host with `requests` available).
 
 Logs into the account identified by EMAIL/PASSWORD in data.md, finds the
-second buyer in the company's network, picks one sellable goods item (item 5 of the product catalog),
+second buyer in the company's network, picks one sellable goods item at random from the product catalog,
 creates a direct OC with 28% GST + Rs. 2000 shipping charge taxed at 18%,
 then creates a Challan delivering 60% of the OC quantity, and finally
 creates an Invoice for the full OC quantity.
@@ -54,7 +54,7 @@ DEFAULT_HEADERS = {
 
 # Automation identity — edit here for a one-off run.
 BUYER_INDEX = 1  # 0 = first buyer, 1 = second buyer.
-ITEM_OFFSET = 4  # which item in the sorted product list to use; diversifies items across docs
+# The single OC line item is picked at random from the full sellable-goods catalog each run.
 TAX_RATE_ITEM = 0.28
 TAX_RATE_SHIPPING = 0.18
 SHIPPING_CHARGE = 2000
@@ -291,7 +291,7 @@ def fetch_buyer(token: str) -> dict:
     return rows[BUYER_INDEX]
 
 
-def fetch_first_product(token: str, buyer_id: int) -> dict:
+def fetch_random_product(token: str, buyer_id: int) -> dict:
     rows = _get(
         token,
         "/settings/product/",
@@ -304,7 +304,7 @@ def fetch_first_product(token: str, buyer_id: int) -> dict:
     )["data"]["results"]
     if not rows:
         sys.exit("No sellable goods found — add a sellable inventory item first.")
-    return rows[min(ITEM_OFFSET, len(rows) - 1)]
+    return random.choice(rows)
 
 
 def build_oc_payload(
@@ -558,7 +558,7 @@ def create_oc_chain(token: str) -> dict:
     buyer_id = buyer["company_id"]
     log.info("Picked buyer #%d: %s (id=%s)", BUYER_INDEX + 1, buyer["name"], buyer_id)
 
-    product = fetch_first_product(token, buyer_id)
+    product = fetch_random_product(token, buyer_id)
     log.info("Picked product: %s (id=%s)", product["product_name"], product["id"])
 
     taxes = _get(token, "/settings/tax/")["data"]["results"]

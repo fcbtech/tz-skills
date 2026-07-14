@@ -5,8 +5,8 @@ adjacent to this script. Designed to be uploaded directly to a Lambda
 function (or any host with `requests` available).
 
 Logs into the account identified by EMAIL/PASSWORD in data.md, finds the
-first buyer in the company's network, picks 4 sellable goods (items 1-4
-of the product catalog), and creates a direct OC with the 18% GST master tax applied to each
+first buyer in the company's network, picks 4 sellable goods at random
+from the product catalog, and creates a direct OC with the 18% GST master tax applied to each
 line at create time (regardless of the products' own tax mappings).
 Order quantity per line is randomised at run time.
 """
@@ -53,8 +53,7 @@ DEFAULT_HEADERS = {
 # Automation identity — edit here for a one-off run.
 OC_DOC_TYPE_INT = 4
 TAX_RATE = 0.18
-NUM_ITEMS = 4
-ITEM_OFFSET = 0  # start index into the sorted product list; diversifies which items each doc uses
+NUM_ITEMS = 4  # picked at random from the full sellable-goods catalog each run
 QTY_MIN = 500
 QTY_MAX = 1000
 TRANSACTION_TITLE = "OC auto-test"
@@ -251,7 +250,7 @@ def fetch_first_buyer(token: str) -> dict:
     return rows[0]
 
 
-def fetch_first_n_products(token: str, buyer_id: int) -> list[dict]:
+def fetch_random_products(token: str, buyer_id: int) -> list[dict]:
     rows = _get(
         token,
         "/settings/product/",
@@ -264,8 +263,9 @@ def fetch_first_n_products(token: str, buyer_id: int) -> list[dict]:
     )["data"]["results"]
     if len(rows) < NUM_ITEMS:
         sys.exit(f"Need {NUM_ITEMS} sellable goods; found {len(rows)}.")
-    start = min(ITEM_OFFSET, len(rows) - NUM_ITEMS)
-    return rows[start:start + NUM_ITEMS]
+    # Random sample (without replacement) from the whole catalog so every run
+    # can exercise any of the available products, not a fixed leading window.
+    return random.sample(rows, NUM_ITEMS)
 
 
 def fetch_tax_master(token: str, rate: float) -> dict:
@@ -437,9 +437,9 @@ def create_oc(token: str) -> dict:
     buyer_id = buyer["company_id"]
     log.info("Picked buyer: %s (id=%s)", buyer["name"], buyer_id)
 
-    products = fetch_first_n_products(token, buyer_id)
+    products = fetch_random_products(token, buyer_id)
     log.info(
-        "Picked first %d sellable goods: %s",
+        "Picked %d random sellable goods: %s",
         NUM_ITEMS,
         ", ".join(p["product_name"] for p in products),
     )
