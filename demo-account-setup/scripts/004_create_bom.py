@@ -7,7 +7,10 @@ function (or any host with `requests` available).
 Logs into the account identified by EMAIL/PASSWORD in data.md and:
   1. Resolves the FG and RM products by name (case-insensitive exact match).
   2. Maps each row's unit name to the matching unit on the product master.
-  3. Picks the first non-reject store + first available BOM number series.
+  3. Picks the first non-reject store (rm/fg/scrap) + first available BOM
+     number series, and resolves the WIP store the header requires
+     (`doc_wip_store` — base-data default, else a WIP-typed store, else the
+     main store). Omitting `doc_wip_store` makes create 500.
   4. POSTs /production/bom/create/ with `save_action=save_and_publish` and
      `other_charges` zeroed across all four fixed buckets (data.md does not
      declare per-bucket amounts).
@@ -186,12 +189,38 @@ def flatten_doc_custom_fields(base_data: dict[str, Any]) -> list[dict[str, Any]]
     return fields
 
 
-def fetch_first_non_reject_store(token: str) -> int:
-    rows = _get(token, "/settings/my-settings/", params={"model": "all_stores"})["data"]
-    for store in rows:
+def fetch_all_stores(token: str) -> list[dict[str, Any]]:
+    return _get(token, "/settings/my-settings/", params={"model": "all_stores"})["data"]
+
+
+def first_non_reject_store(stores: list[dict[str, Any]]) -> int:
+    for store in stores:
         if store.get("is_reject") == 0:
             return int(store["id"])
     raise RuntimeError("No non-reject store found in this account.")
+
+
+def resolve_wip_store(base_data: dict[str, Any], stores: list[dict[str, Any]],
+                      fallback_store_id: int) -> tuple[int, str]:
+    """Resolve the WIP store the BOM header requires.
+
+    The web flow always sends ``doc_wip_store`` in primary_document_details;
+    omitting it makes /production/bom/create/ 500 ("Something went wrong!").
+    Prefer the base-data default (what the webapp pre-fills), then a WIP-typed
+    store from the store list, then reuse the main store as a last resort.
+    """
+    pdd = (base_data.get("docData") or {}).get("primary_document_details") or {}
+    default_wip = pdd.get("doc_wip_store")
+    if default_wip:
+        return int(default_wip), "base-data default"
+    for s in stores:
+        blob = " ".join(
+            str(s.get(k, "")).lower()
+            for k in ("store_type", "type", "name", "store_name", "store_category")
+        )
+        if "wip" in blob or "work in progress" in blob or "work-in-progress" in blob:
+            return int(s["id"]), "store-list WIP match"
+    return int(fallback_store_id), "fallback (reused main store)"
 
 
 def fetch_number_series(token: str, store_id: int) -> list[dict[str, Any]]:
@@ -311,6 +340,7 @@ def base_product_row(product: dict[str, Any], unit: dict[str, Any],
         "id": product["id"],
         "product": product["id"],
         "uuid": product["uuid"],
+        "item_uuid": product["uuid"],
         "itemid": product["itemid"],
         "product_name": product["product_name"],
         "name": product["product_name"],
@@ -330,6 +360,7 @@ def base_product_row(product: dict[str, Any], unit: dict[str, Any],
         "custom_fields_parsed": product.get("custom_fields_parsed", {}),
         "custom_fields": [],
         "alternate_list": [],
+        "routing_list": [],
         "key_mappings": {"text": "product_name", "value": "id"},
     }
 
@@ -383,6 +414,7 @@ def build_child_rm_row(rm_item: dict[str, Any], parent_quantity: float,
         "current_stock": 0,
         "showMoveRMDialog": False,
         "item_id": rm_item["item_id"],
+        "item_uuid": rm_item.get("item_uuid", ""),
         "itemid": rm_item.get("itemid", ""),
         "product_name": rm_item.get("product_name", ""),
         "index_color": color,
@@ -403,6 +435,7 @@ def build_child_rm_row(rm_item: dict[str, Any], parent_quantity: float,
         "expanded": False,
         "composition": per_unit,
         "mfg_quantity": 0,
+        "routing_list": [],
     }
 
 
@@ -445,15 +478,16 @@ def attach_child_bom(token: str, rm_row: dict[str, Any], item_id: int, unit_id: 
 
 
 def build_other_charges_zero() -> dict[str, dict[str, Any]]:
-    return {key: {"charges": "0", "comment": "", "classification": label}
+    return {key: {"charges": 0, "comment": "", "classification": label}
             for key, label in OTHER_CHARGES_BUCKETS}
 
 
-def build_create_payload(base_data: dict[str, Any], store_id: int,
+def build_create_payload(base_data: dict[str, Any], store_id: int, wip_store_id: int,
                          series_list: list[dict[str, Any]],
                          fg_row: dict[str, Any], rm_rows: list[dict[str, Any]],
                          bom_name: str) -> dict[str, Any]:
     doc_data = base_data["docData"]
+    pdd_defaults = doc_data.get("primary_document_details") or {}
     custom_fields = flatten_doc_custom_fields(base_data)
     doc_date = datetime.datetime.now().strftime("%d/%m/%Y - %H:%M")
     return {
@@ -468,6 +502,8 @@ def build_create_payload(base_data: dict[str, Any], store_id: int,
                 "doc_rm_store": store_id,
                 "doc_fg_store": store_id,
                 "doc_scrap_store": store_id,
+                "doc_wip_store": wip_store_id,
+                "doc_created_by": pdd_defaults.get("doc_created_by", ""),
                 "doc_reference_no": "",
                 "doc_comment": "",
                 "doc_bom_description": "",
@@ -479,7 +515,7 @@ def build_create_payload(base_data: dict[str, Any], store_id: int,
             "attachments": {"existing_attachments": []},
             "finished_goods": [fg_row],
             "raw_materials": rm_rows,
-            "routing": [],
+            "routing": {},
             "routing_change_history": [],
             "scrap": [],
             "other_charges": build_other_charges_zero(),
@@ -515,7 +551,10 @@ def main() -> None:
 
     log.info("Fetching BOM base-data, store and number series.")
     base_data = fetch_base_data(token)
-    store_id = fetch_first_non_reject_store(token)
+    stores = fetch_all_stores(token)
+    store_id = first_non_reject_store(stores)
+    wip_store_id, wip_src = resolve_wip_store(base_data, stores, store_id)
+    log.info("Stores: rm/fg/scrap=%s, doc_wip_store=%s (%s)", store_id, wip_store_id, wip_src)
     series_list = fetch_number_series(token, store_id)
     if not series_list:
         raise RuntimeError(f"No BOM number series available for store_id={store_id}.")
@@ -561,7 +600,7 @@ def main() -> None:
 
             rm_rows.append(rm_row)
 
-        payload = build_create_payload(base_data, store_id, series_list, fg_row, rm_rows, bom_name)
+        payload = build_create_payload(base_data, store_id, wip_store_id, series_list, fg_row, rm_rows, bom_name)
         log.info("Creating BOM %r with FG %r, %d RM(s), %d linked child BOM(s).",
                  bom_name, fg_spec["name"], len(rm_rows), len(linked_rm_item_ids))
         create_resp = _post(token, "/production/bom/create/", payload)
