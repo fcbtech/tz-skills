@@ -1,4 +1,8 @@
 .ruff_cache/
+__pycache__/
+*.pyc
 freshdesk/scripts/.env
 outline/scripts/.env
 keka/scripts/.env
+mysql/scripts/.env
+slack/scripts/.env
