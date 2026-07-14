@@ -6,7 +6,7 @@ function (or any host with `requests` available).
 
 Logs into the account identified by EMAIL/PASSWORD in data.md, finds the
 first supplier in the company's network, picks three buyable
-goods (items 9-11 of the product catalog), and creates:
+goods at random from the product catalog, and creates:
 
   1. a direct PO with 18% GST on each line and a random quantity per item;
   2. an Inward against that PO marking 100% of the ordered quantity as
@@ -60,8 +60,7 @@ PO_DOC_TYPE_INT = 1
 INWARD_DOC_TYPE_INT = 3
 INVOICE_DOC_TYPE_INT = 2
 TAX_RATE = 0.18
-NUM_ITEMS = 3
-ITEM_OFFSET = 8  # start index into the sorted product list; diversifies which items each doc uses
+NUM_ITEMS = 3  # picked at random from the full buyable-goods catalog each run
 QTY_MIN = 50
 QTY_MAX = 200
 TRANSACTION_TITLE = "PO Inward Invoice auto-test"
@@ -381,8 +380,9 @@ def discover_context(token: str) -> dict[str, Any]:
     buyable = [p for p in prod_resp if not p.get("is_service")]
     if len(buyable) < NUM_ITEMS:
         sys.exit(f"Need {NUM_ITEMS} buyable goods for supplier {sup_id}; got {len(buyable)}")
-    start = min(ITEM_OFFSET, len(buyable) - NUM_ITEMS)
-    products = buyable[start:start + NUM_ITEMS]
+    # Random sample (without replacement) from the whole catalog so every run
+    # can exercise any of the available products, not a fixed leading window.
+    products = random.sample(buyable, NUM_ITEMS)
 
     ds = _get(
         token,

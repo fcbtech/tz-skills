@@ -5,7 +5,7 @@ adjacent to this script. Designed to be uploaded directly to a Lambda
 function (or any host with `requests` available).
 
 Picks the first supplier in the company's network, one buyable goods
-product (item 15 of the product catalog) linked to that supplier, and a random PO quantity. The chain then
+product picked at random from the product catalog and linked to that supplier, and a random PO quantity. The chain then
 exercises a full Quality-Inspection + return flow:
 
   1. Direct PO — 1 item, random qty, product's own tax (fall back to 18% GST).
@@ -65,8 +65,7 @@ QIR_DOC_TYPE_INT = 5
 PRDC_DOC_TYPE_INT = 44
 
 SUPPLIER_INDEX = 0  # 0 = first supplier in counter-party list.
-NUM_ITEMS = 1
-ITEM_OFFSET = 14  # which item in the sorted product list to use; diversifies items across docs
+NUM_ITEMS = 1  # the single PO line item is picked at random from the full buyable-goods catalog each run
 PO_QTY_MIN = 50
 PO_QTY_MAX = 200
 INWARD1_FRACTION = 0.40
@@ -392,7 +391,7 @@ def discover_context(token: str) -> dict[str, Any]:
     buyable = [p for p in prod_resp if not p.get("is_service")]
     if not buyable:
         sys.exit(f"Need a buyable good for supplier {sup_id}; got 0")
-    product = buyable[min(ITEM_OFFSET, len(buyable) - 1)]
+    product = random.choice(buyable)
     tax_master = _resolve_product_tax(product, taxes_by_id)
 
     ds = _get(

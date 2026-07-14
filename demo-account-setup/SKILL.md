@@ -39,17 +39,18 @@ After a successful run the demo account will have:
    `price / qty`. The BOM(s) are authored so this resolves to **exactly 15 unique items —
    5 finished goods typed `"Sell"` + 10 raw materials typed `"Both"`** (⇒ 15 sell-capable,
    10 buy-capable), keeping the initial inventory seed compact but flexible.
-5. Three Order Confirmation flows (sales side). The OC/PO scripts are wired to spread the
-   inventory across documents so that **all 15 items are exercised** — each script uses a
-   distinct slice of the product list (by `ITEM_OFFSET` + item count) rather than always the
-   first two, giving a diversified demo. Sales side uses catalog items 1–8:
-   - OC for the first buyer (items 1–4).
-   - OC for the second buyer (item 5), followed by a Challan and Invoice.
-   - OC followed by an Invoice and two split Challans (items 6–8).
-6. Three Purchase Order flows (buy side). Buy side uses catalog items 9–15:
-   - PO for the first supplier (items 9–11) → Inward (100%) → Invoice.
-   - PO for the second supplier (items 12–14) → Inward (60% partial receipt).
-   - PO for the first supplier (item 15) → split Inwards (40% + 60%) → two QIRs (full / 90% accept)
+5. Three Order Confirmation flows (sales side). Each script picks its line items **at random**
+   from the full sellable-goods catalog (no fixed offset), so the exact products vary per run
+   while the catalog is exercised broadly across repeated runs. A little overlap between
+   documents is acceptable for demo data:
+   - OC for the first buyer (4 items).
+   - OC for the second buyer (1 item), followed by a Challan and Invoice.
+   - OC followed by an Invoice and two split Challans (3 items).
+6. Three Purchase Order flows (buy side). Each script picks its line items at random from the
+   full buyable-goods catalog:
+   - PO for the first supplier (3 items) → Inward (100%) → Invoice.
+   - PO for the second supplier (3 items) → Inward (60% partial receipt).
+   - PO for the first supplier (1 item) → split Inwards (40% + 60%) → two QIRs (full / 90% accept)
      → PRDC for the rejected 10% → Invoice for the full PO quantity. **The QIR step is a premium
      feature** (`grn-qir`); if it isn't enabled, this flow stops after the inwards (non-fatal — the
      PO + inwards are still created) and the run continues.

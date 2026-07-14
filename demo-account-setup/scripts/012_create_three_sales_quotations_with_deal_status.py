@@ -624,7 +624,8 @@ def main() -> None:
     products = fetch_sell_products_with_tax(token)
     if len(products) < 2:
         raise RuntimeError(f"Need at least 2 sell-side products with a GST tax mapping; found {len(products)}.")
-    p1, p2 = products[0], products[1]
+    # Random distinct products (varies per run) instead of always the first two.
+    p1, p2 = random.sample(products, 2)
 
     tax_master_by_id = fetch_tax_master_by_id(token)
     store = fetch_default_store(token)
