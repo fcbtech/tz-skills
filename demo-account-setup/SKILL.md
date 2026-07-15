@@ -35,10 +35,12 @@ After a successful run the demo account will have:
    derived as `<first_name>@<first_word_of_company>.test`.
 3. Master units of measure seeded (derived from `[[BOM]]` rows in `data.md`).
 4. Inventory items derived from `[[BOM]]` in `data.md` — every distinct item across all
-   BOM recipes is created on the account, deduped by name, at a per-unit price of
-   `price / qty`. The BOM(s) are authored so this resolves to **exactly 15 unique items —
-   5 finished goods typed `"Sell"` + 10 raw materials typed `"Both"`** (⇒ 15 sell-capable,
-   10 buy-capable), keeping the initial inventory seed compact but flexible.
+   BOM nodes (finished goods, sub-assemblies, and bought leaves) is created on the account,
+   deduped by name, at a per-unit price of `price / qty`. The item count is **not fixed** — it
+   flexes with the good being modelled (a simple product seeds a handful of items; a complex
+   multi-level one seeds a few dozen). The top finished good is typed `"Sell"`; sub-assemblies and
+   bought leaves are `"Both"`, so there are always ample sell-capable and buy-capable items for the
+   downstream document steps.
 5. Three Order Confirmation flows (sales side). Each script picks its line items **at random**
    from the full sellable-goods catalog (no fixed offset), so the exact products vary per run
    while the catalog is exercised broadly across repeated runs. A little overlap between
@@ -63,9 +65,11 @@ After a successful run the demo account will have:
    - SQ for the first buyer (2 items).
    - SQ for the second buyer (1 item), flipped to deal_status = Lost.
    - SQ for the first buyer (1 item), flipped to deal_status = Won.
-9. Bills of Materials built from the `[[BOM]]` block(s) in `data.md` — each a finished good + its
-   raw materials, published against the first non-reject store and the first available BOM number
-   series. The BOM step is **non-fatal**: if it fails for **any** reason (the `bom` premium feature
+9. Bills of Materials built from the `[[BOM]]` block(s) in `data.md` — a realistic **multi-level
+   tree** by default (the top finished good, its manufactured sub-assemblies each with their own
+   BOM, linked via `child_bom`, down to bought leaf materials), published bottom-up against the
+   first non-reject store and the first available BOM number series. The BOM step is **non-fatal**:
+   if it fails for **any** reason (the `bom` premium feature
    not enabled → HTTP 426, or a backend error → HTTP 500), it is **skipped** and everything else is
    still created — the BOM can be added later by re-running `004` once the cause is resolved.
 10. **(Optional)** The company logo, uploaded from the image file at `LOGO_PATH` — either one the
@@ -168,141 +172,152 @@ teammate explicitly skips a field, fall back to the template default for that fi
 
 - Three plausible counter-party names — one Supplier, one Buyer, one "Both" — that would
   realistically transact with a company in that industry.
-- Several `[[BOM]]` recipes (typically five — one per finished good). Each recipe describes
-  ONE finished good and the raw materials consumed to produce a given quantity of it. The BOM is
-  the **sole source of truth** for the inventory items and UoMs seeded on the account — there is
-  no separate `INVENTORY_ITEMS` list any more. Author the recipes so that the deduped item set is
-  **exactly 15 unique items — 5 finished goods typed `"Sell"` + 10 raw materials typed `"Both"`**
-  (⇒ 15 sell-capable, 10 buy-capable).
+- A realistic **multi-level BOM tree** for the finished good(s) the company makes. Each `[[BOM]]`
+  block is one node — a finished good or a sub-assembly — plus the parts it consumes. The BOMs are
+  the **sole source of truth** for the inventory items and UoMs seeded on the account (there is no
+  separate `INVENTORY_ITEMS` list). How many blocks, how many items, and how deep the tree goes
+  all **flex with the good** — see "Author the BOM tree" below for the method. This is the default;
+  a flat single-level seed is available as a quick alternative.
 
 `[[BOM]]` shape (TOML):
 
 ```toml
 [[BOM]]
-[BOM.FG]                 # finished good (exactly one per BOM block; type "Sell" for this seed)
-qty = 1
+[BOM.FG]                 # the node's finished good (exactly one per block). "Sell" if it's the
+qty = 1                  # top good, "Both" if it's a sub-assembly (an FG that is also consumed).
 unit = "Pcs"
 name = "Sliding Window"
 price = 8500             # value of `qty` units of the FG (per-unit = price / qty)
 type = "Sell"
 
-[[BOM.RM]]               # one or more raw materials (type "Both" for this seed)
+[[BOM.RM]]               # one or more parts this node consumes (bought leaves are "Both")
 qty = 12
 unit = "Sqft"
 name = "Float Glass"
 price = 960
 type = "Both"
-# child_bom = true        # OPTIONAL (multi-level): link this RM to its own published
-                          # BOM so its sub-components expand inline. The RM item must be
-                          # the [BOM.FG] of an EARLIER [[BOM]] block. Use a bom_number/
-                          # bom_name string instead of `true` to target a specific BOM.
+# child_bom = true        # set on a part that is itself MANUFACTURED: links it to its own
+                          # BOM so its sub-parts expand inline (this is what nests the tree).
+                          # The part must be the [BOM.FG] of an EARLIER [[BOM]] block (published
+                          # first). Pass a bom_number/bom_name string to target a specific BOM.
 
 # ...more [[BOM.RM]] rows as needed
 ```
 
-Rules for the BOM(s) you generate:
+**Author the BOM tree.** Real goods are made as a *tree*, not a flat list: a finished good is
+built from parts, some of which the company **makes** itself (sub-assemblies, each with its own
+BOM) and some it **buys** finished (leaf materials).
 
-- Generate **as many `[[BOM]]` blocks as needed to realise the 15-item set — typically five**
-  (one per finished good), plus at most one extra block if you author a nested sub-assembly
-  (see multi-level below). This is the initial seed; keep it to those 15 items — don't inflate it.
-- Across all BOM blocks combined the deduped item set must be **exactly 15 unique items**
-  (counted by name — every finished good plus every distinct raw material together). The 003
-  script creates one inventory item per unique name, so 15 unique names ⇒ exactly 15 items on
-  the account. Reuse the same raw material across multiple BOMs (e.g. a shared "Float Glass") so
-  the recipes stay inside the 15-item budget — reused names collapse to a single item.
-- Each `[[BOM]]` block has exactly one `[BOM.FG]` table — the finished good. For this seed
-  its `type` is `"Sell"` (finished goods are sold, not purchased).
-- Each `[[BOM]]` block has one or more `[[BOM.RM]]` rows — the raw materials. For this seed
-  their `type` is `"Both"` (bought as inputs, and also resellable).
-- `qty` is the quantity of that item consumed/produced for this recipe; `price` is the value
-  of that `qty` in INR (not per-unit). The 003 script creates the inventory item at a
-  per-unit price of `price / qty`. Every row (including a reused RM) must carry valid `qty`
-  and `price`; keep the per-unit price consistent across occurrences (the first occurrence
-  wins on conflict).
-- If the same item name appears across both BOMs, every occurrence must agree on `type`
-  and `unit`.
-- Choose realistic `unit` values from the standard set (Kg, Gms, Litres, ml, Pcs, Sheets,
-  Metres, Sqft, Dozen, Set, Nos, etc.).
-- **Required types:** the **5 finished goods are typed `"Sell"`** and the **10 raw materials are
-  typed `"Both"`**. This gives **15 sell-capable items** (5 Sell FGs + 10 Both RMs) and **10
-  buy-capable items** (the 10 Both RMs), far above the downstream script minimums (the sales
-  scripts `011_…`/`012_…` need ≥3 sell-side products; the PO/inward scripts `008_…`/`009_…` need
-  buyable goods — the RMs cover those). Finished goods are **not** typed `"Both"`: a finished good
-  that is also purchasable has been seen to trip the BOM create endpoint, so keep FGs `"Sell"`.
-  - The cleanest compliant shape: **five BOMs whose five finished goods are typed `"Sell"`,
-    drawing their raw materials from a shared pool of 10 items typed `"Both"`, reused across the
-    recipes so all 10 raw materials appear at least once.** That yields exactly 15 unique items
-    (5 Sell + 10 Both).
-- The 003 script auto-attaches the company's default GST tax (first `tax_type == "gst"`
-  entry) to every product it creates. Do not list a tax field in the BOM — it's handled
-  for you. If the account has no GST master configured, 003 fails fast with a clear error.
-- **Optional — multi-level (nested) BOMs.** Set `child_bom = true` on an `[[BOM.RM]]` row
-  to link it to that item's existing published BOM; its raw materials then expand as a
-  sub-assembly. The linked item **must be the `[BOM.FG]` of an earlier `[[BOM]]` block** in
-  the same `data.md` (so it is published before the parent is created — list the child BOM
-  first) and should be typed `"Both"` (a sub-assembly is both manufactured and consumed). Pass a
-  `bom_number`/`bom_name` string instead of `true` to target a specific BOM. Still respect the
-  exactly-15-unique-items budget (5 `"Sell"` finished goods + 10 `"Both"` raw materials; the nested
-  sub-assembly is one of the `"Both"` items, so it may add one extra `[[BOM]]` block — six in total
-  — while keeping 15 items). Omit `child_bom` for the normal flat seed; the default is flat.
-  (On read-back the view flattens child RMs into top-level rows; the script handles this.)
+**Every good's tree is unique — derive it from how *that* good is actually made; never reshape a
+good to match an example.** The number of BOMs, the number of items, how deep it nests, and *where*
+it nests all fall out of the specific product. A garam-masala pack, a cotton shirt, an LED bulb, a
+sofa and a table fan decompose into completely different shapes — different depths, different
+breadths, a different branch carrying the depth, and some barely nesting at all. The worked examples
+further down (and the fan in `data.md.template`) illustrate the **method**, not a shape to copy —
+treat them as "here's how the reasoning goes," then reason the same way from scratch for the good in
+front of you. Design the tree like this:
 
-Every name, item, unit, and price must be **relatable to the stated industry**. Each example
-below ships five `[[BOM]]` recipes totalling exactly 15 unique items — **5 finished goods typed
-`"Sell"`** drawing on a shared pool of **10 raw materials typed `"Both"`** (15 sell-capable, 10
-buy-capable). Wire each finished good to a few raw materials from the pool, reusing them freely,
-so every raw material appears in at least one recipe:
+1. **Start from the finished good(s)** the account should sell — derived from the industry, or
+   named by the teammate.
+2. **Walk every part and ask the make-vs-buy question:** *does the company MAKE this from other
+   things, or BUY it finished?*
+   - **MAKE → it's a sub-assembly.** Give it its own `[[BOM]]` block (its `[BOM.FG]` is the part;
+     its `[[BOM.RM]]` rows are what it's made from), then recurse into *those* parts. Link it into
+     its parent as an `[[BOM.RM]]` row carrying `child_bom = true`. In-house steps that make
+     something a sub-assembly: **assembling** parts into a module (a motor, a gearbox),
+     **fabricating/forming** a shape from raw stock (a guard bent from wire, a pipe cut to size),
+     **casting/molding** from raw material (a die-cast arm).
+   - **BUY → it's a leaf.** Just an `[[BOM.RM]]` row, no block of its own. Standard commodity parts
+     (bearings, capacitors, connectors), **fasteners/hardware** (screws, nuts, washers, pins),
+     **raw stock** bought by weight/length (wire, rod, pipe, sheet, granules), and
+     **packaging/labels** (cartons, poly bags, stickers, tape) are always leaves — even an
+     internally-complex one (a bought bearing is a leaf), because *this* company doesn't make it.
+3. **Go deep only where it matters.** A real BOM is deep in the **1–2 branches that are the heart
+   of the product** and flat everywhere else — a fan's motor nests 3 levels, but its carton and
+   screws hang straight off the top. Don't decompose every branch.
+4. **Bound it as a window, not a quota.** Typically **~2–3 levels** deep and a handful of BOMs,
+   *scaling with the good*: a simple product (a wooden stool) may be 1–2 levels and 2 BOMs; a
+   complex one (a fan, a pump) 3 levels and ~5–8 BOMs. Stop at ~3 levels; when a part is borderline
+   make-or-buy near that edge, call it **bought**.
 
-- *Window manufacturer* → suppliers: "Saint Glass Traders", "Aluminium Extrusions Pvt Ltd";
-  buyer: "Skyline Builders Pvt Ltd"; both: "Hardware Mart LLP".
-  - **5 finished goods** (one `[[BOM]]` each, `"Sell"`): Sliding Window (Pcs, 8500),
-    Fixed Window (Pcs, 6200), Casement Window (Pcs, 7400), Glass Door (Pcs, 12000),
-    Ventilator (Pcs, 3200).
-  - **10 raw materials** (`"Both"`): Aluminium Section (Kg, 800), Glass Panel (Sqft, 1500),
-    Handle Set (Set, 220), Hinge (Pcs, 90), Door Lock (Pcs, 450), Float Glass (Sqft, 960),
-    Rubber Gasket (Metres, 150), Silicone Sealant (Pcs, 180), Screws (Nos, 40),
-    Weather Strip (Metres, 120).
-  - e.g. Sliding Window ← Float Glass, Aluminium Section, Rubber Gasket, Handle Set;
-    Glass Door ← Glass Panel, Door Lock, Aluminium Section, Weather Strip; etc. →
-    15 unique items = 5 Sell + 10 Both (15 sell-capable, 10 buy-capable).
-- *Lamp manufacturer* → suppliers: "Greece Traders LLP", "Filament Supplies Pvt Ltd";
-  buyer: "Skyline Lighting Pvt Ltd"; both: "Hardware Mart LLP".
-  - **5 finished goods** (`"Sell"`): Table Lamp (Pcs, 1200), Floor Lamp (Pcs, 3400),
-    Pendant Lamp (Pcs, 2100), Wall Lamp (Pcs, 1600), Desk Lamp (Pcs, 900).
-  - **10 raw materials** (`"Both"`): Bulb (Pcs, 20), Lamp Shade (Pcs, 150), Switch (Pcs, 35),
-    Lamp Base (Pcs, 90), Wire Spool (Metres, 60), Filament (Kg, 320), Greece (Gms, 80),
-    Screws (Nos, 40), Solder (Pcs, 110), Insulation Tape (Pcs, 25).
-  - Wire each lamp to a few of these so all 10 raw materials appear → 15 unique items
-    (5 Sell + 10 Both).
-- *Lamp manufacturer (multi-level)* → same counter-parties as above.
-  - Make one raw material double as a published sub-assembly: author **Bulb Assembly** as the
-    `[BOM.FG]` of an earlier `[[BOM]]` block (← Bulb, Filament, Solder), then link it into a later
-    lamp's `[[BOM.RM]]` via `child_bom = true`. A sub-assembly is both manufactured *and* consumed,
-    so it is the one item typed `"Both"` rather than `"Sell"`; it counts as one of the 10 `"Both"`
-    items, adding one extra `[[BOM]]` block (six total) while the deduped set stays at 15 items.
-    (Note: a `"Both"` finished-good-style item is the shape suspected of tripping the BOM-create
-    endpoint — prefer flat BOMs until that's resolved.) Only offer this when the teammate opts in.
+**Order the blocks bottom-up.** A child's `[[BOM]]` block **must appear before** the parent that
+consumes it, so it is published first: list the deepest sub-assemblies first, then the ones above
+them, then the top finished good last. `004` walks the blocks in order and wires each child into
+its parent via `child_bom` (you may also pass a `bom_number`/`bom_name` string instead of `true`
+to target a specific BOM, but `true` — "link this item's one published BOM" — is what you want on
+a fresh account where each sub-assembly has exactly one BOM).
 
-Show the generated names + BOM(s) to the teammate so they can accept, edit individual entries,
-or override entirely. If they decline to give an industry, fall back to template defaults for
-the counter-party names and the BOM.
+**Typing — a fixed rule that holds for any tree shape:**
+- the **top finished good is `"Sell"`**,
+- every **sub-assembly is `"Both"`** (it is manufactured *and* consumed as a line in its parent),
+- every **bought leaf is `"Both"`** (a purchased input that is also resellable).
 
-**Always offer a multi-level (nested) BOM before proceeding.** When you present the generated
-BOM(s) for confirmation — and before any script runs — explicitly ask the teammate whether they
-want one of the finished goods to be used as a raw material inside another BOM (a multi-level /
-nested sub-assembly), briefly explaining what that demonstrates. If they say yes, restructure the
-recipes so the intermediate good is the `[BOM.FG]` of an earlier `[[BOM]]` block and is linked via
-`child_bom = true` on the parent's `[[BOM.RM]]` row (see the multi-level rules and example above),
-still within the 15-item budget (5 `"Sell"` FGs + 10 `"Both"` RMs). If they decline, proceed with
-the flat BOM(s).
+This guarantees the downstream scripts always have enough **sell-capable** items (the `"Sell"` FG
+plus every `"Both"` item) and **buy-capable** items (every `"Both"` item): the sales scripts
+`011_…`/`012_…` need ≥3 sell-side products and the PO scripts `008_…`/`009_…` need ≥2 buyable —
+any realistic tree clears both with room to spare. (A `"Both"` sub-assembly is safe: the old worry
+that a purchasable finished-good-style item trips BOM-create was the missing `doc_wip_store`, now
+fixed.)
+
+**Consistency + prices.** A sub-assembly must use the **same `unit` and per-unit `price`** wherever
+it appears — as its own `[BOM.FG]` and as a `child_bom` line in its parent — because reused names
+collapse to a single inventory item and the child-link lookup matches on item **+ unit**. Any item
+name reused across blocks must agree on `type` and `unit` (first occurrence wins on price). `qty` is
+how much of that item this recipe consumes/produces; `price` is the value of that `qty` in INR
+(per-unit = `price / qty`). Choose realistic `unit`s (Nos, Pcs, Kg, Gms, Metres, Sqft, Set, Litres,
+Sheets, …). The 003 script creates one inventory item per unique name at the per-unit price and
+auto-attaches the company's default GST — **do not** put a tax field in the BOM (003 fails fast if
+the account has no GST master).
+
+**Flat is still an option.** If the teammate just wants a quick, non-realistic seed, a **flat set of
+single-level BOMs** — each finished good → a few bought raw materials, no `child_bom` — still works.
+Offer it, but the **default is the realistic multi-level tree** above.
+
+Every name, item, unit, and price must be **relatable to the stated industry**. The examples below
+exist to show that **structure is derived from the good** — notice how differently each one nests.
+They are illustrations of the method, **not** shapes to reuse; design the tree for the actual good
+you're given, even if it looks nothing like any of these.
+
+- *Table fan (electro-mechanical → deep, nests at the drivetrain).* 3 levels: **Stator** ←
+  copper winding wire, stamping core, insulation (bought) → rolls up into **Motor Assembly** ←
+  stator + bearing, capacitor, shaft, housing → rolls up into **Table Fan** ← motor + blade,
+  guards, base, regulator, carton, fasteners. The depth lives entirely in the motor; the rest of
+  the fan is flat bought parts. (This is the shape in `data.md.template`.)
+- *Cotton shirt (cut-and-sew → shallow, nests at a stitched component).* 2 levels: **Collar** ←
+  collar fabric + interlining + thread (bought/consumed) → rolls up into **Shirt** ← collar + cut
+  body panels (from bought Fabric, Metres), buttons, sewing thread, care label, polybag. Fabric is
+  a bought raw material consumed by the metre; only the collar is a real sub-assembly.
+- *Garam masala pack (process/FMCG → shallow, nests at an intermediate blend).* 2 levels:
+  **Spice Blend** ← turmeric, coriander, cumin, chilli (bought by Kg) → rolls up into **Masala
+  100g Pack** ← spice blend + stand-up pouch + label. Quantities are fractional weights; packaging
+  is leaves. No hardware, no deep tree — the "manufacturing" is the blend.
+- *Plumbing repair kit (assortment → genuinely flat, no sub-assembly at all).* 1 level: **Repair
+  Kit** ← washers, O-rings, PTFE tape, adapters, screws — all bought and just packed together.
+  Some goods legitimately don't nest; don't invent sub-assemblies that aren't real.
+
+(A **flat single-level seed** — every finished good → a few bought raw materials, no `child_bom` —
+is also the quick opt-in alternative when a teammate wants something fast rather than realistic;
+e.g. a window maker: Sliding Window / Glass Door (`"Sell"`) each ← aluminium section, float glass,
+handle set, door lock, gasket, screws (`"Both"`).)
+
+Show the generated finished good(s) + the BOM tree (indented so the nesting is visible) to the
+teammate so they can accept, edit individual entries, or override entirely. If they decline to give
+an industry, fall back to the template defaults for the counter-party names and the BOM.
+
+**Default to the realistic multi-level tree; offer flat as the quick alternative.** When you present
+the BOM(s) for confirmation — before any script runs — lead with the multi-level tree you designed
+(showing which parts are made-in-house sub-assemblies vs. bought leaves, and how deep it nests), and
+mention that a flat single-level seed is available if they'd prefer something quick. Only drop to
+the flat shape if the teammate asks for it.
 
 ### Step 4 — Confirm the final seed values with the user
 
 Before running anything, print a clean summary of every value that will be written to `data.md`,
 covering: credentials, company profile, owner contact, counter-party company names, the
-`[[BOM]]` recipe(s) — for each, the `[BOM.FG]` finished good and every `[[BOM.RM]]` raw
-material (qty, unit, name, price-for-qty, type) — and the company logo (`LOGO_PATH`, or
-"none — logo step skipped" when empty). Mark which values came from the user vs. which fell back to defaults. **Do not include any
+**BOM tree** — show it indented so the nesting is visible (the top finished good, each
+sub-assembly under its parent, and the bought leaves), with qty, unit, name, price-for-qty and
+type per row, and mark which parts are sub-assemblies (`child_bom`) — and the company logo
+(`LOGO_PATH`, or "none — logo step skipped" when empty). Mark which values came from the user vs. which fell back to defaults. **Do not include any
 constants from the Python scripts** (contact first/last names, phones, addresses inside the
 counter-parties, etc.) — they are not user-facing. **Do not include `BASE_URL`** in the summary
 unless the teammate explicitly overrode it with a specific URL — in that case show the overridden
@@ -446,14 +461,14 @@ backend error worth reporting.
    `PASSWORD` is never asked — carried verbatim from `data.md.template` into `data.md`.
 4. **Counter-party names and BOM contents must be relatable to the demo company's industry.**
    Always ask the teammate what the demo company does, then derive coherent, industry-appropriate
-   names, BOM recipes (finished good + raw materials), units, and prices. Do not mix items from
-   unrelated industries. The `[[BOM]]` blocks are the sole source of truth for which inventory
-   items and UoMs end up on the account — there is no separate `INVENTORY_ITEMS` config.
-   **Cap the seed at exactly 15 unique items — 5 finished goods typed `"Sell"` + 10 raw materials
-   typed `"Both"`** (typically five `[[BOM]]` blocks — one per finished good — plus at most one
-   extra block for a nested sub-assembly). That gives 15 sell-capable and 10 buy-capable items.
-   Keep finished goods `"Sell"` (not `"Both"`) — a purchasable finished good has been seen to trip
-   the BOM-create endpoint.
+   names, a realistic BOM tree, units, and prices. Do not mix items from unrelated industries. The
+   `[[BOM]]` blocks are the sole source of truth for which inventory items and UoMs end up on the
+   account — there is no separate `INVENTORY_ITEMS` config. **Size the BOM to the good, not to a
+   fixed count** (see "Author the BOM tree"): decompose it into a realistic multi-level tree —
+   made-in-house parts become sub-assemblies with their own BOMs, bought parts are leaves — deep in
+   the 1–2 branches that matter, ~2–3 levels, scaling with the product. Type the **top finished
+   good `"Sell"`** and **every sub-assembly and bought leaf `"Both"`**; that always clears the
+   downstream minimums (≥3 sell-side, ≥2 buyable).
 5. **Always confirm the full seed-value summary before execution.** Print every value about to be
    written to `data.md`, mark user-supplied vs. default, and wait for explicit go-ahead.
 6. **Never run the scripts out of order or in parallel.** Each step assumes the prior step's
@@ -463,10 +478,10 @@ backend error worth reporting.
    the sandbox. Their job is to chat.
 9. **`scripts/data.md` is sandbox-local and ephemeral.** It holds the demo's credentials but is
    discarded with the sandbox; no commit/storage concerns.
-10. **Always offer a multi-level (nested) BOM before execution.** When presenting the generated
-    BOM(s) for confirmation, proactively ask whether the teammate wants a finished good used as a
-    raw material in another BOM (`child_bom = true`). Suggest it every run; proceed flat only if
-    they decline.
+10. **Default to a realistic multi-level BOM tree; flat is the opt-in alternative.** Decompose the
+    good into sub-assemblies (made-in-house) and leaves (bought), nesting via `child_bom` and
+    ordering child blocks before their parents. Present that tree for confirmation and mention a
+    quick flat seed is available; only build flat if the teammate asks for it.
 
 ## Troubleshooting
 
@@ -481,15 +496,14 @@ backend error worth reporting.
   email. The 60%-partial-inward and the QIR/PRDC chain assume the supplier has at least one
   buyable product with a delivery location configured.
 - **SE/SQ steps (011–012) fail with "Need at least 3 sell-side products with a GST tax mapping"** →
-  the BOM didn't include enough sell-capable items. Re-run from `000_` with a fresh email and a
-  BOM that follows the standard seed — **all 15 items typed `Both`** gives 15 sell-capable
-  items, well above the ≥3 the script needs. 003 auto-attaches GST, so as long as
-  the account has a GST master under
-  Settings → Tax Options, every item created will carry one.
+  the BOM didn't include enough sell-capable items. Re-run from `000_` with a fresh email and a BOM
+  that follows the typing rule — the top finished good `"Sell"` and **every sub-assembly and bought
+  leaf `"Both"`** — which makes every item sell-capable, far above the ≥3 the script needs. 003
+  auto-attaches GST, so as long as the account has a GST master under Settings → Tax Options, every
+  item created will carry one.
 - **PO steps (008–009) fail with "Need 2 buyable goods for supplier"** → the BOM had fewer than
-  2 buy-capable items. Ensure the standard seed — **all 15 items typed `Both`** gives 15
-  buy-capable goods, comfortable margin — then re-run from `000_` with a fresh
-  email.
+  2 buy-capable items. Ensure sub-assemblies and leaves are typed `"Both"` (every `"Both"` item is
+  buy-capable) — any realistic tree clears this — then re-run from `000_` with a fresh email.
 - **003 fails with "No GST tax master found on the company"** → the account doesn't have GST
   enabled in Settings → Tax Options. Toggle on GST 18% (or any GST rate) and re-run from `003_`.
 - **Any document step (`004`–`013`) fails** → those steps are mutually independent, so **any
@@ -502,11 +516,13 @@ backend error worth reporting.
     environments (production). This is a backend-side error, not a data problem; report it to the
     Tranzact team (see the isolation step below) and re-run `004` once it's fixed.
   Note the skipped steps in the final report; no need to re-run from `000_` to add them later.
-- **BOM (`004`) 500 — how to isolate whether it's Tranzact's bug or our data** → before blaming the
-  endpoint, on an env where the create is reachable, test a **flat BOM whose finished good is typed
-  `Sell`** (not `Both`). If the `Sell`-FG BOM succeeds where the all-`Both` one 500s, the fix is on
-  our side (finished goods shouldn't be `Both`); if it still 500s, capture the full response body /
-  server trace and hand it to Tranzact engineering.
+- **BOM (`004`) 500 — how to isolate whether it's Tranzact's bug or our data** → the known payload
+  cause (a missing `doc_wip_store`) is already fixed in `004`, and `"Both"` sub-assemblies create
+  fine, so a 500 now is most likely backend-side. To confirm, on an env where the create is
+  reachable test the **shipped `data.md.template` tree** (a known-good multi-level BOM): if that
+  500s too, it's the endpoint — capture the full response body / server trace and hand it to
+  Tranzact engineering. If only the generated BOM 500s, diff it against the template for a malformed
+  row (bad unit, child block listed after its parent, inconsistent sub-assembly unit).
 - **013 logo step fails with "LOGO_PATH file not found"** → the path in `data.md` doesn't resolve
   inside the sandbox. Confirm the image (a supplied file, or one you fetched from the company
   website and saved) is at that path, or clear `LOGO_PATH` to skip the logo. The rest of the
