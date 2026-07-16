@@ -37,10 +37,11 @@ After a successful run the demo account will have:
 4. Inventory items derived from `[[BOM]]` in `data.md` — every distinct item across all
    BOM nodes (finished goods, sub-assemblies, and bought leaves) is created on the account,
    deduped by name, at a per-unit price of `price / qty`. The item count is **not fixed** — it
-   flexes with the good being modelled (a simple product seeds a handful of items; a complex
-   multi-level one seeds a few dozen). The top finished good is typed `"Sell"`; sub-assemblies and
-   bought leaves are `"Both"`, so there are always ample sell-capable and buy-capable items for the
-   downstream document steps.
+   flexes with the good being modelled (a simple product seeds a handful of items; a richer
+   multi-level one seeds more) — but is **hard-capped at 20 unique items**, a server-load ceiling
+   `003` enforces (it aborts before creating anything if the tree exceeds 20). The top finished good
+   is typed `"Sell"`; sub-assemblies and bought leaves are `"Both"`, so there are always ample
+   sell-capable and buy-capable items for the downstream document steps.
 5. Three Order Confirmation flows (sales side). Each script picks its line items **at random**
    from the full sellable-goods catalog (no fixed offset), so the exact products vary per run
    while the catalog is exercised broadly across repeated runs. A little overlap between
@@ -235,10 +236,17 @@ front of you. Design the tree like this:
 3. **Go deep only where it matters.** A real BOM is deep in the **1–2 branches that are the heart
    of the product** and flat everywhere else — a fan's motor nests 3 levels, but its carton and
    screws hang straight off the top. Don't decompose every branch.
-4. **Bound it as a window, not a quota.** Typically **~2–3 levels** deep and a handful of BOMs,
-   *scaling with the good*: a simple product (a wooden stool) may be 1–2 levels and 2 BOMs; a
-   complex one (a fan, a pump) 3 levels and ~5–8 BOMs. Stop at ~3 levels; when a part is borderline
-   make-or-buy near that edge, call it **bought**.
+4. **Bound it as a window, not a quota — under a hard ceiling.** Typically **~2–3 levels** deep and
+   a handful of BOMs, *scaling with the good*: a simple product (a wooden stool) may be 1–2 levels
+   and 2 BOMs; a complex one (a fan) 3 levels and 3–5 BOMs. Stop at ~3 levels; when a part is
+   borderline make-or-buy near that edge, call it **bought**.
+
+   > **HARD CAP — the deduped unique-item set must be ≤ 20** (finished good + every sub-assembly +
+   > every leaf, counted by name). This is a server-load ceiling, **not** a guideline: `003` counts
+   > the items and **aborts before creating anything** if the tree resolves to more than 20, so it
+   > can never be exceeded. Design under it — keep the tree focused (deep in 1–2 branches, the rest
+   > flat/bought, reuse shared parts). If `003` rejects the tree for exceeding 20, **trim it** (fewer
+   > or shallower sub-assemblies, prune or merge leaf materials) and re-run from `003`.
 
 **Order the blocks bottom-up.** A child's `[[BOM]]` block **must appear before** the parent that
 consumes it, so it is published first: list the deepest sub-assemblies first, then the ones above
@@ -468,7 +476,8 @@ backend error worth reporting.
    made-in-house parts become sub-assemblies with their own BOMs, bought parts are leaves — deep in
    the 1–2 branches that matter, ~2–3 levels, scaling with the product. Type the **top finished
    good `"Sell"`** and **every sub-assembly and bought leaf `"Both"`**; that always clears the
-   downstream minimums (≥3 sell-side, ≥2 buyable).
+   downstream minimums (≥3 sell-side, ≥2 buyable). **Never exceed the hard cap of 20 unique items** —
+   `003` enforces it and aborts the run (creating nothing) if the tree resolves to more than 20.
 5. **Always confirm the full seed-value summary before execution.** Print every value about to be
    written to `data.md`, mark user-supplied vs. default, and wait for explicit go-ahead.
 6. **Never run the scripts out of order or in parallel.** Each step assumes the prior step's

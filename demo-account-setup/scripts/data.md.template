@@ -54,6 +54,11 @@ LOGO_PATH = ""
 # consumes it (so it is published first). Go deep only in the 1–2 branches that
 # are the heart of the product; let everything else bottom out fast.
 #
+# HARD CAP: the deduped unique-item set (every FG + sub-assembly + leaf, by name)
+# must be <= 20. This is a server-load ceiling, not a guideline — 003 aborts and
+# creates nothing if the tree exceeds 20. Keep the tree focused and reuse shared
+# parts to stay under it. (The fan example below is 18 items.)
+#
 # Typing (keeps the downstream PO/sales scripts happy, whatever the tree shape):
 #   - the TOP finished good is "Sell"
 #   - every sub-assembly is "Both" (it is manufactured AND consumed as a line)
