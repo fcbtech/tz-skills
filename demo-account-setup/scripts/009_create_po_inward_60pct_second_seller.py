@@ -5,8 +5,8 @@ adjacent to this script. Designed to be uploaded directly to a Lambda
 function (or any host with `requests` available).
 
 Logs into the account identified by EMAIL/PASSWORD in data.md, picks the
-second supplier in the company's network, the first two buyable goods
-linked to that supplier, and creates:
+second supplier in the company's network, three buyable goods picked at
+random from the product catalog and linked to that supplier, and creates:
 
   1. a direct PO with 18% GST on each line and a random quantity per item;
   2. an Inward against that PO marking floor(po_qty * 0.6) units per line
@@ -59,7 +59,7 @@ DEFAULT_HEADERS = {
 PO_DOC_TYPE_INT = 1
 INWARD_DOC_TYPE_INT = 3
 TAX_RATE = 0.18
-NUM_ITEMS = 2
+NUM_ITEMS = 3  # picked at random from the full buyable-goods catalog each run
 INWARD_FRACTION = 0.60
 SUPPLIER_INDEX = 1  # 0 = first available, 1 = second available, ...
 QTY_MIN = 50  # keep low bound >= 2 so floor(qty * INWARD_FRACTION) >= 1
@@ -372,9 +372,12 @@ def discover_context(token: str) -> dict[str, Any]:
             "counter_party": sup_id,
         },
     )["data"]["results"]
-    products = [p for p in prod_resp if not p.get("is_service")][:NUM_ITEMS]
-    if len(products) < NUM_ITEMS:
-        sys.exit(f"Need {NUM_ITEMS} buyable goods for supplier {sup_id}; got {len(products)}")
+    buyable = [p for p in prod_resp if not p.get("is_service")]
+    if len(buyable) < NUM_ITEMS:
+        sys.exit(f"Need {NUM_ITEMS} buyable goods for supplier {sup_id}; got {len(buyable)}")
+    # Random sample (without replacement) from the whole catalog so every run
+    # can exercise any of the available products, not a fixed leading window.
+    products = random.sample(buyable, NUM_ITEMS)
 
     ds = _get(
         token,

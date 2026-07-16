@@ -25,46 +25,25 @@ BOTH_COMPANY_NAME = "Quantum Traders LLP"
 
 # --- Company logo (optional) ---
 # Path to a logo image file (png/jpg/webp) in the sandbox. If empty, the
-# logo-upload step (013) is skipped — the account is set up without a logo.
+# logo-upload step (013) is skipped. When only a company website is known,
+# the agent fetches a logo from it, saves it to a file, and sets LOGO_PATH
+# to that file before running 013.
 LOGO_PATH = ""
 
 
 # --- Bill of Materials ---
-# Two BOMs resolving to exactly 6 unique inventory items. "Bulb" is shared
-# (typed Both) across both recipes, so the deduped set is: Lamp (Sell),
-# Table Lamp (Sell), Greece (Buy), Bulb (Both), Lamp Shade (Buy),
-# Filament (Buy) — 3 sell-capable + 4 buy-capable, satisfying the downstream
-# sales-doc (011_, 012_) and PO (008_, 009_) minimums within 6 items.
+# Five BOMs resolving to exactly 15 unique inventory items: the 5 finished
+# goods are typed "Sell" and the 10 raw materials are typed "Both" (⇒ 15
+# sell-capable, 10 buy-capable). The 10 raw materials are shared across the
+# five finished goods, so the deduped set is:
+#   Finished goods (Sell): Table Lamp, Floor Lamp, Pendant Lamp, Wall Lamp, Desk Lamp
+#   Raw materials (Both):  Bulb, Lamp Shade, Switch, Lamp Base, Wire Spool,
+#                          Filament, Greece, Screws, Solder, Insulation Tape
+# This satisfies the downstream sales-doc (011_, 012_) and PO (008_, 009_)
+# minimums with comfortable margin. Finished goods are kept "Sell" (not "Both")
+# because a purchasable finished good has been seen to trip the BOM-create call.
 
-[[BOM]]
-[BOM.FG]
-qty = 1
-unit = "Dozen"
-name = "Lamp"
-price = 8000
-type = "Sell"
-
-[[BOM.RM]]
-qty = 100
-unit = "Gms"
-name = "Greece"
-price = 80
-type = "Buy"
-
-[[BOM.RM]]
-qty = 12
-unit = "Pcs"
-name = "Bulb"
-price = 240
-type = "Both"
-
-[[BOM.RM]]
-qty = 1
-unit = "Pcs"
-name = "Lamp Shade"
-price = 150
-type = "Buy"
-
+# BOM 1 — Table Lamp
 [[BOM]]
 [BOM.FG]
 qty = 1
@@ -81,11 +60,159 @@ price = 20
 type = "Both"
 
 [[BOM.RM]]
-qty = 0.3
+qty = 1
+unit = "Pcs"
+name = "Lamp Shade"
+price = 150
+type = "Both"
+
+[[BOM.RM]]
+qty = 1
 unit = "Kg"
 name = "Filament"
 price = 320
-type = "Buy"
+type = "Both"
+
+# BOM 2 — Floor Lamp
+[[BOM]]
+[BOM.FG]
+qty = 1
+unit = "Pcs"
+name = "Floor Lamp"
+price = 3400
+type = "Sell"
+
+[[BOM.RM]]
+qty = 1
+unit = "Pcs"
+name = "Bulb"
+price = 20
+type = "Both"
+
+[[BOM.RM]]
+qty = 1
+unit = "Pcs"
+name = "Lamp Base"
+price = 90
+type = "Both"
+
+[[BOM.RM]]
+qty = 1
+unit = "Metres"
+name = "Wire Spool"
+price = 60
+type = "Both"
+
+[[BOM.RM]]
+qty = 1
+unit = "Nos"
+name = "Screws"
+price = 40
+type = "Both"
+
+# BOM 3 — Pendant Lamp
+[[BOM]]
+[BOM.FG]
+qty = 1
+unit = "Pcs"
+name = "Pendant Lamp"
+price = 2100
+type = "Sell"
+
+[[BOM.RM]]
+qty = 1
+unit = "Pcs"
+name = "Bulb"
+price = 20
+type = "Both"
+
+[[BOM.RM]]
+qty = 1
+unit = "Pcs"
+name = "Lamp Shade"
+price = 150
+type = "Both"
+
+[[BOM.RM]]
+qty = 1
+unit = "Metres"
+name = "Wire Spool"
+price = 60
+type = "Both"
+
+[[BOM.RM]]
+qty = 1
+unit = "Pcs"
+name = "Solder"
+price = 110
+type = "Both"
+
+# BOM 4 — Wall Lamp
+[[BOM]]
+[BOM.FG]
+qty = 1
+unit = "Pcs"
+name = "Wall Lamp"
+price = 1600
+type = "Sell"
+
+[[BOM.RM]]
+qty = 1
+unit = "Pcs"
+name = "Switch"
+price = 35
+type = "Both"
+
+[[BOM.RM]]
+qty = 1
+unit = "Metres"
+name = "Wire Spool"
+price = 60
+type = "Both"
+
+[[BOM.RM]]
+qty = 1
+unit = "Pcs"
+name = "Insulation Tape"
+price = 25
+type = "Both"
+
+# BOM 5 — Desk Lamp
+[[BOM]]
+[BOM.FG]
+qty = 1
+unit = "Pcs"
+name = "Desk Lamp"
+price = 900
+type = "Sell"
+
+[[BOM.RM]]
+qty = 1
+unit = "Pcs"
+name = "Switch"
+price = 35
+type = "Both"
+
+[[BOM.RM]]
+qty = 1
+unit = "Pcs"
+name = "Lamp Base"
+price = 90
+type = "Both"
+
+[[BOM.RM]]
+qty = 100
+unit = "Gms"
+name = "Greece"
+price = 80
+type = "Both"
+
+[[BOM.RM]]
+qty = 1
+unit = "Nos"
+name = "Screws"
+price = 40
+type = "Both"
 
 # --- Multi-level (nested) BOM — optional ---
 # To make a raw material a sub-assembly, add `child_bom = true` to its [[BOM.RM]]
