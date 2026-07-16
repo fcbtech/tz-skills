@@ -504,6 +504,25 @@ backend error worth reporting.
 - **PO steps (008–009) fail with "Need 2 buyable goods for supplier"** → the BOM had fewer than
   2 buy-capable items. Ensure sub-assemblies and leaves are typed `"Both"` (every `"Both"` item is
   buy-capable) — any realistic tree clears this — then re-run from `000_` with a fresh email.
+- **`002` (units) aborts on HTTP 409 "already exists" for a base unit (e.g. `Nos`, `Kg`)** →
+  environment-specific (seen on `mstag`), **not** universal — don't treat it as fatal and don't
+  edit the bundled script (hard rule 1). On some envs a freshly-onboarded company's master-UoM list
+  comes back empty while base units are **globally reserved**, so `002`'s create hits a 409 and,
+  being a prerequisite, halts. Recover by hand and continue:
+  1. **Seed the required units yourself** via the same endpoints `002` uses (read with
+     `POST /api/v3/settings/master-uom/list`, then the master-uom create), **tolerating the 409** —
+     a 409 "already exists" means that unit is satisfied, so move on. The create may return a
+     **benign HTTP 500 from response serialization *after* the row is created**; confirm by
+     re-posting (a 409 back = it exists) rather than treating the 500 as a failure.
+  2. **Check the company's own `master_units`** (from `003`'s `get_details_for_add_items/`). If a
+     reserved base unit like `Nos`/`Kg` still isn't attached to this company and no attach path is
+     exposed, **remap that unit label in `data.md`** to an equally-standard one that creates and
+     attaches cleanly (`Nos`→`Pcs`, `Kg`→`Kgs`) — leave item names, quantities, prices and BOM
+     structure unchanged; only the label differs.
+  3. **Re-run `003`** and carry on with the rest of the run. **Flag the remap in the Step 7 report**
+     as an environment adaptation (not a data issue), and note it's worth reporting to the TranZact
+     backend team (fresh-company UoM list empty + base units reserved-but-unattached). Do **not**
+     bake any of this into `002` — it doesn't happen on every env.
 - **003 fails with "No GST tax master found on the company"** → the account doesn't have GST
   enabled in Settings → Tax Options. Toggle on GST 18% (or any GST rate) and re-run from `003_`.
 - **Any document step (`004`–`013`) fails** → those steps are mutually independent, so **any
