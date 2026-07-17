@@ -6,7 +6,7 @@ EMAIL = "sanket+dl2@dummy.test"
 PASSWORD = "123456"
 
 # --- Company profile ---
-COMPANY_NAME = "Dev Automations"
+COMPANY_NAME = "Airflow Fans Pvt. Ltd."
 ADDRESS1 = "4th Floor, Boomerang, Andheri"
 PIN = "400057"
 CITY = "Mumbai"
@@ -19,9 +19,9 @@ LAST_NAME = "Patel"
 CONTACT_NO = "9809809800"
 
 # --- Network counter-party company names ---
-SUPPLIER_COMPANY_NAME = "Procuzy Private Limited"
-BUYER_COMPANY_NAME = "Herbal Products Private Limited"
-BOTH_COMPANY_NAME = "Quantum Traders LLP"
+SUPPLIER_COMPANY_NAME = "Copper Coil & Components Pvt Ltd"
+BUYER_COMPANY_NAME = "Cityscape Electricals LLP"
+BOTH_COMPANY_NAME = "Hardware Mart LLP"
 
 # --- Company logo (optional) ---
 # Path to a logo image file (png/jpg/webp) in the sandbox. If empty, the
@@ -31,191 +31,191 @@ BOTH_COMPANY_NAME = "Quantum Traders LLP"
 LOGO_PATH = ""
 
 
-# --- Bill of Materials ---
-# Five BOMs resolving to exactly 15 unique inventory items: the 5 finished
-# goods are typed "Sell" and the 10 raw materials are typed "Both" (⇒ 15
-# sell-capable, 10 buy-capable). The 10 raw materials are shared across the
-# five finished goods, so the deduped set is:
-#   Finished goods (Sell): Table Lamp, Floor Lamp, Pendant Lamp, Wall Lamp, Desk Lamp
-#   Raw materials (Both):  Bulb, Lamp Shade, Switch, Lamp Base, Wire Spool,
-#                          Filament, Greece, Screws, Solder, Insulation Tape
-# This satisfies the downstream sales-doc (011_, 012_) and PO (008_, 009_)
-# minimums with comfortable margin. Finished goods are kept "Sell" (not "Both")
-# because a purchasable finished good has been seen to trip the BOM-create call.
+# --- Bill of Materials -------------------------------------------------------
+#
+# ►► The fan below is ONE ILLUSTRATION of the method — NOT a shape to copy. ◄◄
+# Every good gets its OWN unique structure, designed from how THAT good is really
+# made. Do not force another good into a fan-like, motor-deep shape: a shirt nests
+# at its collar, a masala pack at its spice blend, a repair kit not at all. Derive
+# the tree from the actual product; it may look nothing like this fan.
+#
+# The DEFAULT shape is a REALISTIC MULTI-LEVEL tree — the way goods are actually
+# made — NOT a fixed count of flat BOMs. The number of BOMs, the number of items,
+# how deep it nests, and WHERE it nests all FLEX with the finished good. See
+# SKILL.md > "Author the BOM tree" for the full method. The core rule per part:
+#
+#   Does the company MAKE this from other things, or BUY it finished?
+#     MAKE  -> it is a SUB-ASSEMBLY: give it its own [[BOM]] block and recurse
+#              into its parts. Link it into its parent's [[BOM.RM]] with
+#              `child_bom = true`.
+#     BUY   -> it is a LEAF: just a [[BOM.RM]] line, no block of its own.
+#
+# Build BOTTOM-UP: a child's [[BOM]] block MUST appear BEFORE the parent that
+# consumes it (so it is published first). Go deep only in the 1–2 branches that
+# are the heart of the product; let everything else bottom out fast.
+#
+# HARD CAP: the deduped unique-item set (every FG + sub-assembly + leaf, by name)
+# must be <= 20. This is a server-load ceiling, not a guideline — 003 aborts and
+# creates nothing if the tree exceeds 20. Keep the tree focused and reuse shared
+# parts to stay under it. (The fan example below is 18 items.)
+#
+# Typing (keeps the downstream PO/sales scripts happy, whatever the tree shape):
+#   - the TOP finished good is "Sell"
+#   - every sub-assembly is "Both" (it is manufactured AND consumed as a line)
+#   - every bought leaf is "Both" (purchased input, also resellable)
+# A sub-assembly must use the SAME unit and price wherever it appears (as its own
+# FG and as a child line). Reused names collapse to one inventory item.
+#
+# The worked example below is a 400mm table fan: 3 BOMs, 3 levels, 18 items —
+# deep through the motor (Fan -> Motor Assembly -> Stator), flat elsewhere.
+# (For a quick, non-realistic seed instead, a FLAT set of single-level BOMs is a
+# supported option — see SKILL.md.)
 
-# BOM 1 — Table Lamp
+# ---- Level 2 (deepest): STATOR — wound in-house from copper + core ----------
 [[BOM]]
 [BOM.FG]
 qty = 1
-unit = "Pcs"
-name = "Table Lamp"
-price = 1200
-type = "Sell"
-
-[[BOM.RM]]
-qty = 1
-unit = "Pcs"
-name = "Bulb"
-price = 20
+unit = "Nos"
+name = "Stator 400mm"
+price = 480
 type = "Both"
 
 [[BOM.RM]]
-qty = 1
-unit = "Pcs"
-name = "Lamp Shade"
-price = 150
-type = "Both"
-
-[[BOM.RM]]
-qty = 1
+qty = 0.35
 unit = "Kg"
-name = "Filament"
-price = 320
-type = "Both"
-
-# BOM 2 — Floor Lamp
-[[BOM]]
-[BOM.FG]
-qty = 1
-unit = "Pcs"
-name = "Floor Lamp"
-price = 3400
-type = "Sell"
-
-[[BOM.RM]]
-qty = 1
-unit = "Pcs"
-name = "Bulb"
-price = 20
-type = "Both"
-
-[[BOM.RM]]
-qty = 1
-unit = "Pcs"
-name = "Lamp Base"
-price = 90
-type = "Both"
-
-[[BOM.RM]]
-qty = 1
-unit = "Metres"
-name = "Wire Spool"
-price = 60
+name = "Copper Winding Wire"
+price = 315
 type = "Both"
 
 [[BOM.RM]]
 qty = 1
 unit = "Nos"
-name = "Screws"
-price = 40
+name = "Stator Stamping Core"
+price = 120
 type = "Both"
 
-# BOM 3 — Pendant Lamp
+[[BOM.RM]]
+qty = 2
+unit = "Nos"
+name = "Insulation Paper"
+price = 12
+type = "Both"
+
+# ---- Level 1: MOTOR ASSEMBLY — assembled from the stator + bought parts ------
 [[BOM]]
 [BOM.FG]
 qty = 1
-unit = "Pcs"
-name = "Pendant Lamp"
-price = 2100
-type = "Sell"
-
-[[BOM.RM]]
-qty = 1
-unit = "Pcs"
-name = "Bulb"
-price = 20
+unit = "Nos"
+name = "Motor Assembly 400mm"
+price = 1350
 type = "Both"
 
 [[BOM.RM]]
 qty = 1
-unit = "Pcs"
-name = "Lamp Shade"
-price = 150
+unit = "Nos"
+name = "Stator 400mm"
+price = 480
+type = "Both"
+child_bom = true            # links the Stator BOM published above (level 2)
+
+[[BOM.RM]]
+qty = 2
+unit = "Nos"
+name = "Ball Bearing 6202"
+price = 90
 type = "Both"
 
 [[BOM.RM]]
 qty = 1
-unit = "Metres"
-name = "Wire Spool"
-price = 60
+unit = "Nos"
+name = "Running Capacitor 2.5 MFD"
+price = 45
 type = "Both"
 
 [[BOM.RM]]
 qty = 1
-unit = "Pcs"
-name = "Solder"
+unit = "Nos"
+name = "Motor Shaft"
 price = 110
 type = "Both"
 
-# BOM 4 — Wall Lamp
+[[BOM.RM]]
+qty = 1
+unit = "Nos"
+name = "Motor Housing"
+price = 180
+type = "Both"
+
+# ---- Level 0 (top): TABLE FAN — the sellable finished good -------------------
 [[BOM]]
 [BOM.FG]
 qty = 1
-unit = "Pcs"
-name = "Wall Lamp"
-price = 1600
+unit = "Nos"
+name = "Table Fan 400mm"
+price = 2200
 type = "Sell"
 
 [[BOM.RM]]
 qty = 1
-unit = "Pcs"
-name = "Switch"
-price = 35
+unit = "Nos"
+name = "Motor Assembly 400mm"
+price = 1350
 type = "Both"
+child_bom = true            # links the Motor Assembly BOM published above (level 1)
 
 [[BOM.RM]]
 qty = 1
-unit = "Metres"
-name = "Wire Spool"
-price = 60
-type = "Both"
-
-[[BOM.RM]]
-qty = 1
-unit = "Pcs"
-name = "Insulation Tape"
-price = 25
-type = "Both"
-
-# BOM 5 — Desk Lamp
-[[BOM]]
-[BOM.FG]
-qty = 1
-unit = "Pcs"
-name = "Desk Lamp"
-price = 900
-type = "Sell"
-
-[[BOM.RM]]
-qty = 1
-unit = "Pcs"
-name = "Switch"
-price = 35
-type = "Both"
-
-[[BOM.RM]]
-qty = 1
-unit = "Pcs"
-name = "Lamp Base"
-price = 90
-type = "Both"
-
-[[BOM.RM]]
-qty = 100
-unit = "Gms"
-name = "Greece"
-price = 80
+unit = "Nos"
+name = "Fan Blade 400mm"
+price = 140
 type = "Both"
 
 [[BOM.RM]]
 qty = 1
 unit = "Nos"
-name = "Screws"
-price = 40
+name = "Front Guard"
+price = 160
 type = "Both"
 
-# --- Multi-level (nested) BOM — optional ---
-# To make a raw material a sub-assembly, add `child_bom = true` to its [[BOM.RM]]
-# row and ensure that item is the [BOM.FG] of an EARLIER [[BOM]] block (so it's
-# published first). See SKILL.md > "multi-level (nested) BOMs" for a full recipe.
+[[BOM.RM]]
+qty = 1
+unit = "Nos"
+name = "Rear Guard"
+price = 150
+type = "Both"
+
+[[BOM.RM]]
+qty = 1
+unit = "Nos"
+name = "Base & Stand"
+price = 320
+type = "Both"
+
+[[BOM.RM]]
+qty = 1
+unit = "Nos"
+name = "Speed Regulator"
+price = 85
+type = "Both"
+
+[[BOM.RM]]
+qty = 1
+unit = "Nos"
+name = "Oscillating Knob"
+price = 25
+type = "Both"
+
+[[BOM.RM]]
+qty = 1
+unit = "Nos"
+name = "Packaging Carton"
+price = 55
+type = "Both"
+
+[[BOM.RM]]
+qty = 1
+unit = "Set"
+name = "Fastener Set"
+price = 30
+type = "Both"
 ```

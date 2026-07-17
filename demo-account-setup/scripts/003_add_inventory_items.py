@@ -60,6 +60,14 @@ _REQUIRED_STR_KEYS = ("name", "type", "unit")
 STOCK_MIN = 0
 STOCK_MAX = 300
 
+# HARD server-load ceiling on the number of inventory items a single run may create.
+# This is a deterministic backstop, NOT a soft guideline: 003 is the only script that
+# creates items, and it aborts BEFORE creating anything if the deduped item set exceeds
+# this cap — so it can never be breached regardless of what the BOM tree in data.md
+# contains. The agent designs the tree to stay under it (see SKILL.md); this is the
+# guarantee that it always does.
+MAX_ITEMS = 20
+
 
 def _is_number(value: Any) -> bool:
     return not isinstance(value, bool) and isinstance(value, (int, float))
@@ -373,6 +381,15 @@ def ensure_products(token: str) -> None:
 
 
 def main() -> None:
+    # HARD cap — enforced before any network call so a breach creates nothing.
+    if len(ITEMS) > MAX_ITEMS:
+        sys.exit(
+            f"Item cap exceeded: data.md resolves to {len(ITEMS)} unique inventory items, "
+            f"but the hard maximum is {MAX_ITEMS}. No items were created. Trim the BOM tree "
+            f"(fewer or shallower sub-assemblies, prune leaf materials) so the deduped item "
+            f"set is <= {MAX_ITEMS}, then re-run from 003."
+        )
+
     log.info("=== Login ===")
     token = login()
 

@@ -311,6 +311,27 @@ def fetch_bom_items(token: str, child_bom_id: int) -> dict[str, Any]:
                 params={"selected_bom": child_bom_id})["data"]
 
 
+def count_flattened_rm_rows(token: str, child_bom_id: int) -> int:
+    """Total RM rows the BOM view will flatten a linked child BOM into.
+
+    ``/production/general/view/`` expands a linked child BOM's ENTIRE sub-tree —
+    grandchildren, great-grandchildren and all — into flat top-level rows. But
+    ``get-bom-items`` (what ``attach_child_bom`` reads) returns only the child's
+    IMMEDIATE raw materials. So for a BOM nested 3+ levels deep, counting just the
+    direct child rows under-counts the flattened view by every grandchild row.
+    Recurse through each sub-assembly (any rm_item carrying a ``child_bom_id``) to
+    get the true flattened total the view will report.
+    """
+    items = fetch_bom_items(token, int(child_bom_id))
+    total = 0
+    for it in (items.get("rm_items") or []):
+        total += 1
+        grand_bom_id = it.get("child_bom_id") or 0
+        if grand_bom_id:
+            total += count_flattened_rm_rows(token, int(grand_bom_id))
+    return total
+
+
 def select_child_bom(child_boms: list[dict[str, Any]],
                      selector: Any) -> dict[str, Any] | None:
     """Pick a child BOM. ``selector`` True ⇒ first; a string ⇒ match bom_number/bom_name."""
@@ -595,8 +616,10 @@ def main() -> None:
                 attach_child_bom(token, rm_row, int(product["id"]), int(unit["id"]),
                                  rm_quantity, idx + 1, palette, child_selector)
                 linked_rm_item_ids.append(int(product["id"]))
-                # The view flattens nested child RMs into top-level rows.
-                expected_view_rows += len(rm_row["child_rm"])
+                # The view flattens the child's ENTIRE sub-tree (grandchildren and
+                # deeper) into top-level rows, so count it recursively — not just the
+                # immediate child_rm rows, which would under-count at 3+ levels.
+                expected_view_rows += count_flattened_rm_rows(token, int(rm_row["child_bom_id"]))
 
             rm_rows.append(rm_row)
 
@@ -629,7 +652,7 @@ def main() -> None:
                 f"view returned {(fg or {}).get('itemid')!r}"
             )
         # On read-back the view flattens nested child RMs into top-level rows, so the
-        # expected count is top-level RMs + every linked RM's child_rm rows.
+        # expected count is top-level RMs + each linked RM's full flattened sub-tree.
         rms = view.get("raw_materials") or []
         if len(rms) != expected_view_rows:
             raise RuntimeError(
