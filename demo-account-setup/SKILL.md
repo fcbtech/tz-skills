@@ -69,7 +69,11 @@ After a successful run the demo account will have:
 9. Bills of Materials built from the `[[BOM]]` block(s) in `data.md` — a realistic **multi-level
    tree** by default (the top finished good, its manufactured sub-assemblies each with their own
    BOM, linked via `child_bom`, down to bought leaf materials), published bottom-up against the
-   first non-reject store and the first available BOM number series. The BOM step is **non-fatal**:
+   first non-reject store and the first available BOM number series. Each BOM can also carry
+   **realistic costing** — optional `[BOM.charges]` (labour/machinery/electricity/other) and
+   `[[BOM.scrap]]` byproduct rows — so a finished good's cost reflects rolled-up material + charges −
+   scrap recovery (scrap byproducts are inventory items, seeded by `003` and counted in the item
+   cap). The BOM step is **non-fatal**:
    if it fails for **any** reason (the `bom` premium feature
    not enabled → HTTP 426, or a backend error → HTTP 500), it is **skipped** and everything else is
    still created — the BOM can be added later by re-running `004` once the cause is resolved.
@@ -242,11 +246,12 @@ front of you. Design the tree like this:
    borderline make-or-buy near that edge, call it **bought**.
 
    > **HARD CAP — the deduped unique-item set must be ≤ 20** (finished good + every sub-assembly +
-   > every leaf, counted by name). This is a server-load ceiling, **not** a guideline: `003` counts
-   > the items and **aborts before creating anything** if the tree resolves to more than 20, so it
-   > can never be exceeded. Design under it — keep the tree focused (deep in 1–2 branches, the rest
-   > flat/bought, reuse shared parts). If `003` rejects the tree for exceeding 20, **trim it** (fewer
-   > or shallower sub-assemblies, prune or merge leaf materials) and re-run from `003`.
+   > every leaf + every **`[[BOM.scrap]]`** byproduct, counted by name). This is a server-load
+   > ceiling, **not** a guideline: `003` counts the items and **aborts before creating anything** if
+   > the tree resolves to more than 20, so it can never be exceeded. Design under it — keep the tree
+   > focused (deep in 1–2 branches, the rest flat/bought, reuse shared parts) and **budget scrap items
+   > into the 20**. If `003` rejects the tree for exceeding 20, **trim it** (fewer or shallower
+   > sub-assemblies, prune or merge leaf materials or scrap rows) and re-run from `003`.
 
 **Order the blocks bottom-up.** A child's `[[BOM]]` block **must appear before** the parent that
 consumes it, so it is published first: list the deepest sub-assemblies first, then the ones above
@@ -276,6 +281,38 @@ how much of that item this recipe consumes/produces; `price` is the value of tha
 Sheets, …). The 003 script creates one inventory item per unique name at the per-unit price and
 auto-attaches the company's default GST — **do not** put a tax field in the BOM (003 fails fast if
 the account has no GST master).
+
+**Realistic costing (optional, per BOM) — charges + scrap.** A real finished good doesn't cost just
+its raw materials; it costs **rolled-up material + labour/machinery/electricity/other charges −
+scrap recovery**. Make each BOM's cost realistic by adding two optional pieces to its `[[BOM]]`
+block — both **agent-derived from how *that* good is made, never hard-coded**, exactly like the tree
+itself:
+
+- **`[BOM.charges]`** — an optional table with any subset of `labour` / `machinery` / `electricity` /
+  `other` (INR for the FG's `qty`). Derive them from the good's process and scale them to its
+  rolled-up material cost: a **forged/machined/cast** part is machinery-heavy; a **stitched, wound,
+  hand-assembled** one is labour-heavy; an **energy-intensive** step (heating, moulding, running-test)
+  carries electricity; packaging/consumables/QC go under `other`. A simple pack or a pure kit may have
+  almost none. Put charges on the BOMs where the work actually happens (a sub-assembly that's wound or
+  machined earns its own charges; a trivial one may earn none). Omit the table ⇒ zero charges.
+- **`[[BOM.scrap]]`** — optional byproduct rows (`name`, `qty`, `unit`, `price`, `type`), one per
+  scrap the process yields. **Scrap is an inventory item** — `003` creates it and **it counts toward
+  the 20-item cap**, so budget scrap into the tree (deep branches that cut/wind/machine are where
+  scrap comes from: offcuts, turnings, trims, rejects). Its **per-unit price (`price / qty`) is the
+  recovery value** credited against the FG's cost — the scrap row itself carries no price. Two
+  flavours, agent's choice per scrap:
+  - **Sellable scrap** — recovered/sold at its value (e.g. *Copper Scrap*, *Fabric Offcuts*). A normal
+    new item.
+  - **Reusable byproduct** — fed back into manufacturing: give the scrap the **same `name`** as an
+    `[[BOM.RM]]` used elsewhere so the names dedup to one item (it is then both consumed as an input
+    and produced as scrap). Use this when the offcut genuinely re-enters production.
+  Derive scrap from the good's real waste; goods that produce none (a clean assembly, a repair kit)
+  simply omit it.
+
+Keep both **consistent with the good and under the cap**: material items + scrap items together must
+stay ≤ 20 (`003` still aborts above 20). The fan in `data.md.template` shows the shape — labour-heavy
+charges on the wound stator, assembly charges on the motor, assembly+packaging charges on the fan,
+copper scrap at the stator and sheet-metal scrap at final assembly (20 items: 18 material + 2 scrap).
 
 **Flat is still an option.** If the teammate just wants a quick, non-realistic seed, a **flat set of
 single-level BOMs** — each finished good → a few bought raw materials, no `child_bom` — still works.
@@ -324,7 +361,9 @@ Before running anything, print a clean summary of every value that will be writt
 covering: credentials, company profile, owner contact, counter-party company names, the
 **BOM tree** — show it indented so the nesting is visible (the top finished good, each
 sub-assembly under its parent, and the bought leaves), with qty, unit, name, price-for-qty and
-type per row, and mark which parts are sub-assemblies (`child_bom`) — and the company logo
+type per row, and mark which parts are sub-assemblies (`child_bom`); when a BOM carries **costing**,
+show its `[BOM.charges]` (labour/machinery/electricity/other) and its `[[BOM.scrap]]` byproduct rows
+(name, qty, unit, recovery price, and whether sold or reused) under that BOM — and the company logo
 (`LOGO_PATH`, or "none — logo step skipped" when empty). Mark which values came from the user vs. which fell back to defaults. **Do not include any
 constants from the Python scripts** (contact first/last names, phones, addresses inside the
 counter-parties, etc.) — they are not user-facing. **Do not include `BASE_URL`** in the summary
@@ -476,8 +515,11 @@ backend error worth reporting.
    made-in-house parts become sub-assemblies with their own BOMs, bought parts are leaves — deep in
    the 1–2 branches that matter, ~2–3 levels, scaling with the product. Type the **top finished
    good `"Sell"`** and **every sub-assembly and bought leaf `"Both"`**; that always clears the
-   downstream minimums (≥3 sell-side, ≥2 buyable). **Never exceed the hard cap of 20 unique items** —
-   `003` enforces it and aborts the run (creating nothing) if the tree resolves to more than 20.
+   downstream minimums (≥3 sell-side, ≥2 buyable). Optionally give each BOM **realistic costing** —
+   `[BOM.charges]` and `[[BOM.scrap]]` byproducts (see "Realistic costing") — derived from how the
+   good is made, never hard-coded. **Never exceed the hard cap of 20 unique items**, counting
+   material **and scrap** items — `003` enforces it and aborts the run (creating nothing) if the
+   deduped set resolves to more than 20.
 5. **Always confirm the full seed-value summary before execution.** Print every value about to be
    written to `data.md`, mark user-supplied vs. default, and wait for explicit go-ahead.
 6. **Never run the scripts out of order or in parallel.** Each step assumes the prior step's

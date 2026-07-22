@@ -8,10 +8,12 @@ module (no openpyxl/pandas).
 
 The list of items to create is derived from the `[[BOM]]` blocks in data.md
 (the sole source of truth). Each block has one `[BOM.FG]` finished-good
-table and zero-or-more `[[BOM.RM]]` raw-material rows. Each row needs:
+table, zero-or-more `[[BOM.RM]]` raw-material rows, and zero-or-more
+`[[BOM.scrap]]` byproduct rows (scrap is an inventory item too — its per-unit
+price is the recovery value that credits the FG's cost in 004). Each row needs:
 name, type ("Buy" | "Sell" | "Both"), unit, qty, price. Items appearing in
-multiple BOMs must agree on `type` and `unit` — the first occurrence's
-per-unit price (`price / qty`) wins. The `unit` must already exist as a Unit of
+multiple BOMs (or as both an RM and a scrap) must agree on `type` and `unit` —
+the first occurrence's per-unit price (`price / qty`) wins. The `unit` must already exist as a Unit of
 Measurement on the company (seeded by 002); the script fails fast if it doesn't.
 
 Bulk creation
@@ -99,7 +101,13 @@ def _is_number(value: Any) -> bool:
 
 
 def _iter_bom_rows(raw: Any):
-    """Yield (location, entry) for every FG and RM row across all [[BOM]] blocks."""
+    """Yield (location, entry) for every FG, RM and scrap row across all [[BOM]] blocks.
+
+    Scrap byproducts declared under ``[[BOM.scrap]]`` are inventory items too (they
+    need a UoM and a per-unit price — their price IS the recovery value used to
+    credit the finished good's cost), so they are seeded exactly like RM rows and
+    count toward the item cap. A scrap that reuses an RM/FG name simply dedups.
+    """
     if not isinstance(raw, list) or not raw:
         sys.exit("data.md must define at least one [[BOM]] entry")
     for bom_idx, bom in enumerate(raw):
@@ -110,14 +118,21 @@ def _iter_bom_rows(raw: Any):
             sys.exit(f"BOM[{bom_idx}] must define a [BOM.FG] finished-good table")
         yield f"BOM[{bom_idx}].FG", fg
         rms = bom.get("RM")
-        if rms is None:
-            continue
-        if not isinstance(rms, list) or not rms:
-            sys.exit(f"BOM[{bom_idx}].RM, when present, must be a non-empty array")
-        for rm_idx, rm in enumerate(rms):
-            if not isinstance(rm, dict):
-                sys.exit(f"BOM[{bom_idx}].RM[{rm_idx}] must be a table")
-            yield f"BOM[{bom_idx}].RM[{rm_idx}]", rm
+        if rms is not None:
+            if not isinstance(rms, list) or not rms:
+                sys.exit(f"BOM[{bom_idx}].RM, when present, must be a non-empty array")
+            for rm_idx, rm in enumerate(rms):
+                if not isinstance(rm, dict):
+                    sys.exit(f"BOM[{bom_idx}].RM[{rm_idx}] must be a table")
+                yield f"BOM[{bom_idx}].RM[{rm_idx}]", rm
+        scraps = bom.get("scrap")
+        if scraps is not None:
+            if not isinstance(scraps, list) or not scraps:
+                sys.exit(f"BOM[{bom_idx}].scrap, when present, must be a non-empty array")
+            for s_idx, scrap in enumerate(scraps):
+                if not isinstance(scrap, dict):
+                    sys.exit(f"BOM[{bom_idx}].scrap[{s_idx}] must be a table")
+                yield f"BOM[{bom_idx}].scrap[{s_idx}]", scrap
 
 
 def _load_items(raw: Any) -> list[dict[str, Any]]:
