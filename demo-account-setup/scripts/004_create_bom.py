@@ -725,14 +725,21 @@ def main() -> None:
                     f"Linked RM item_id={item_id} did not persist a child_bom_id in the BOM view."
                 )
         # Costing persisted as sent: each declared charge bucket + the scrap rows.
+        # The backend normalizes other_charges to PER-UNIT — it divides each charge
+        # by the FG quantity before storing — so the view returns charge / FG-qty,
+        # not the as-sent total. Compare against that per-unit value; otherwise a BOM
+        # with charges and FG qty > 1 fails here AFTER it was already created fine.
         if bom_spec.get("charges"):
+            fg_qty = float(fg_spec["qty"]) or 1.0
             view_oc = view.get("other_charges") or {}
             for bucket, _label in OTHER_CHARGES_BUCKETS:
-                expected = float(other_charges[bucket]["charges"])
+                sent = float(other_charges[bucket]["charges"])
+                expected = sent / fg_qty
                 got = float((view_oc.get(bucket) or {}).get("charges") or 0)
                 if abs(got - expected) > 0.001:
                     raise RuntimeError(
-                        f"BOM other_charges[{bucket}] mismatch — sent {expected}, view returned {got}."
+                        f"BOM other_charges[{bucket}] mismatch — expected per-unit {expected} "
+                        f"(sent {sent} for FG qty {fg_qty}), view returned {got}."
                     )
         if scrap_rows:
             view_scrap = view.get("scrap") or []
