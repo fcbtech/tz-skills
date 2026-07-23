@@ -1,30 +1,44 @@
-"""Add demo inventory items (products) to a Tranzact account.
+"""Add demo inventory items (products) to a Tranzact account — in ONE bulk upload.
 
 Standalone — no imports from the qa framework. Reads inputs from data.md
 adjacent to this script. Designed to be uploaded directly to a Lambda
-function (or any host with `requests` available).
-
-Creates each product/item via the inventory master endpoint. Re-running the
-script is safe — products that already exist on the account are skipped.
+function (or any host with `requests` available). STDLIB + requests ONLY — the
+xlsx the bulk endpoint needs is generated with the standard-library `zipfile`
+module (no openpyxl/pandas).
 
 The list of items to create is derived from the `[[BOM]]` blocks in data.md
 (the sole source of truth). Each block has one `[BOM.FG]` finished-good
 table and zero-or-more `[[BOM.RM]]` raw-material rows. Each row needs:
 name, type ("Buy" | "Sell" | "Both"), unit, qty, price. Items appearing in
 multiple BOMs must agree on `type` and `unit` — the first occurrence's
-per-unit price (`price / qty`) wins. The `unit` must already exist as a
-Unit of Measurement on the company; the script fails fast if it doesn't.
+per-unit price (`price / qty`) wins. The `unit` must already exist as a Unit of
+Measurement on the company (seeded by 002); the script fails fast if it doesn't.
+
+Bulk creation
+-------------
+Instead of one API call per item, every new item is written into a single Excel
+sheet (TranZact's item-import template columns) and POSTed once to
+`/ops_dashboard/product_api/product_submit/`. The server auto-numbers Item IDs
+from the account's product series (we pass the series *prefix* as the Item ID and
+it fills in the running number). This sets name, Product/Service, type
+(Buy/Sell/Both), unit, price and GST in one shot. Opening stock is intentionally
+NOT set (the bulk template has no field for it; it is cosmetic and nothing
+downstream requires it). Re-running is safe — items already present are skipped
+before the upload.
 """
 
 from __future__ import annotations
 
+import base64
+import io
 import logging
-import random
 import re
 import sys
 import tomllib
+import zipfile
 from pathlib import Path
 from typing import Any
+from xml.sax.saxutils import escape
 
 import requests
 
@@ -46,6 +60,7 @@ DATA = load_data_md(__file__)
 
 BASE_URL: str = DATA["BASE_URL"].rstrip("/")
 TIMEOUT = 30
+UPLOAD_TIMEOUT = 120  # the bulk upload does server-side parse+create; give it room
 
 DEFAULT_HEADERS = {
     "Content-Type": "application/json",
@@ -53,12 +68,22 @@ DEFAULT_HEADERS = {
     "Tz-Request-Source": "webapp",
 }
 
+# Item-import template columns the bulk endpoint expects (exact labels; the
+# "Item Type (Buy/Sell/Both)" header is required — the upload is rejected without
+# it). Optional numeric columns (other prices, min/max stock level) are omitted:
+# the endpoint rejects empty numeric cells, so we simply don't include them.
+BULK_COLUMNS = [
+    "Item ID",
+    "Item Name",
+    "Product/Service",
+    "Item Type (Buy/Sell/Both)",
+    "Unit of Measurement",
+    "Default Price",
+    "Tax",
+]
+
 _VALID_TYPES = {"Buy", "Sell", "Both"}
 _REQUIRED_STR_KEYS = ("name", "type", "unit")
-
-# Initial (opening) stock assigned to each new item, randomised per item.
-STOCK_MIN = 0
-STOCK_MAX = 300
 
 # HARD server-load ceiling on the number of inventory items a single run may create.
 # This is a deterministic backstop, NOT a soft guideline: 003 is the only script that
@@ -166,7 +191,7 @@ log = logging.getLogger("automation")
 
 
 def login() -> str:
-    """POST /main/login/password-login/ → access token. Inlined; replaces core.auth.ensure_authenticated."""
+    """POST /main/login/password-login/ → access token."""
     url = f"{BASE_URL}/main/login/password-login/"
     log.info(">>> POST /main/login/password-login/")
     response = requests.post(
@@ -213,7 +238,125 @@ def _post(token: str, path: str, payload: dict) -> dict:
     return response.json() or {}
 
 
-# --- Business flow ----------------------------------------------------------
+def _post_multipart(token: str, path: str, files: dict) -> dict:
+    """POST multipart/form-data. Must NOT set Content-Type — requests adds the
+    boundary. Used for the Excel bulk upload."""
+    url = f"{BASE_URL}{path}"
+    headers = {
+        "Accept": "application/json",
+        "Tz-Request-Source": "webapp",
+        "Authorization": f"Bearer {token}",
+    }
+    log.info(">>> POST %s (multipart)", path)
+    response = requests.post(url, files=files, headers=headers, timeout=UPLOAD_TIMEOUT)
+    log.info("<<< POST %s -> %d", path, response.status_code)
+    if response.status_code >= 400:
+        sys.exit(f"POST {path} failed (HTTP {response.status_code}): {response.text[:300]}")
+    return response.json() or {}
+
+
+# --- Minimal stdlib xlsx writer/reader (no openpyxl) ------------------------
+
+
+def _col_letter(idx: int) -> str:
+    """0-based column index -> spreadsheet column letter (0->A, 26->AA)."""
+    out = ""
+    idx += 1
+    while idx > 0:
+        idx, rem = divmod(idx - 1, 26)
+        out = chr(65 + rem) + out
+    return out
+
+
+def build_xlsx(rows: list[list[Any]]) -> bytes:
+    """Build a minimal single-sheet .xlsx from `rows` (list of cell lists) using
+    only the standard library. Text cells use inline strings; ints/floats are
+    written as numbers."""
+    def cell(letter: str, r: int, value: Any) -> str:
+        ref = f"{letter}{r}"
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return f'<c r="{ref}"><v>{value}</v></c>'
+        text = escape("" if value is None else str(value))
+        return f'<c r="{ref}" t="inlineStr"><is><t xml:space="preserve">{text}</t></is></c>'
+
+    sheet_rows = "".join(
+        f'<row r="{ri}">' + "".join(cell(_col_letter(ci), ri, v) for ci, v in enumerate(row)) + "</row>"
+        for ri, row in enumerate(rows, start=1)
+    )
+    sheet = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        f"<sheetData>{sheet_rows}</sheetData></worksheet>"
+    )
+    content_types = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+        '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+        "</Types>"
+    )
+    root_rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+        "</Relationships>"
+    )
+    workbook = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        '<sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>'
+    )
+    workbook_rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+        "</Relationships>"
+    )
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("[Content_Types].xml", content_types)
+        z.writestr("_rels/.rels", root_rels)
+        z.writestr("xl/workbook.xml", workbook)
+        z.writestr("xl/_rels/workbook.xml.rels", workbook_rels)
+        z.writestr("xl/worksheets/sheet1.xml", sheet)
+    return buf.getvalue()
+
+
+def read_xlsx_rows(data: bytes) -> list[list[str]]:
+    """Best-effort read of an .xlsx (the server's error file) into rows of text,
+    using only the standard library. Handles shared strings and inline strings."""
+    import xml.etree.ElementTree as ET
+
+    ns = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+    z = zipfile.ZipFile(io.BytesIO(data))
+    shared: list[str] = []
+    if "xl/sharedStrings.xml" in z.namelist():
+        for si in ET.fromstring(z.read("xl/sharedStrings.xml")).findall(f"{ns}si"):
+            shared.append("".join(t.text or "" for t in si.iter(f"{ns}t")))
+    sheet_name = next((n for n in z.namelist() if n.startswith("xl/worksheets/") and n.endswith(".xml")), None)
+    if not sheet_name:
+        return []
+    out: list[list[str]] = []
+    for row in ET.fromstring(z.read(sheet_name)).iter(f"{ns}row"):
+        cells: list[str] = []
+        for c in row.findall(f"{ns}c"):
+            ctype = c.get("t")
+            v = c.find(f"{ns}v")
+            if ctype == "s" and v is not None and v.text is not None:
+                cells.append(shared[int(v.text)])
+            elif ctype == "inlineStr":
+                is_el = c.find(f"{ns}is")
+                cells.append("".join(t.text or "" for t in is_el.iter(f"{ns}t")) if is_el is not None else "")
+            else:
+                cells.append(v.text if v is not None and v.text is not None else "")
+        out.append(cells)
+    return out
+
+
+# --- Master-data lookups ----------------------------------------------------
 
 
 def fetch_masters(token: str) -> dict:
@@ -221,33 +364,46 @@ def fetch_masters(token: str) -> dict:
     return res.get("data", {})
 
 
-def fetch_first_series(token: str) -> tuple[int, str]:
-    """Returns (series row id, next itemid value)."""
-    res = _post(token, "/inventory/main-inventory/get_product_series/", {})
-    data = res.get("data", {})
+def pick_default_gst_rate(masters: dict) -> str | None:
+    """Return a GST rate string (e.g. "18") for the bulk `Tax` column, or None.
+
+    The bulk upload maps `Tax` by percentage rate (unlike the single-item endpoint
+    which took a tax_id). We read the account's GST tax masters — each carries a
+    `tax_name` like "Tax:18%" — and prefer 18% (India's common rate), else the
+    first GST rate found. Downstream sales/PO scripts require items to carry a GST
+    mapping, so every item gets this rate.
+    """
+    tax_type_map = masters.get("tax_type") or {}
+    taxes = masters.get("taxes") or []
+    if not isinstance(taxes, list):  # defensive — backend returns {} when empty
+        return None
+    rates: list[str] = []
+    for tax in taxes:
+        if not isinstance(tax, dict):
+            continue
+        if tax_type_map.get(str(tax.get("id"))) != "gst":
+            continue
+        m = re.search(r"(\d+(?:\.\d+)?)\s*%", str(tax.get("tax_name") or ""))
+        if m:
+            rates.append(m.group(1))
+    if not rates:
+        return None
+    return "18" if "18" in rates else rates[0]
+
+
+def fetch_series_prefix(token: str) -> str:
+    """Return the account's product-series prefix (e.g. "RM/"). Passed as the Item
+    ID in the bulk sheet; the server auto-numbers each row from the series."""
+    data = _post(token, "/inventory/main-inventory/get_product_series/", {}).get("data", {})
     if data.get("product_series_type") != "series":
-        raise RuntimeError("Account is in manual Item-ID mode; this automation needs series mode.")
+        raise RuntimeError("Account is in manual Item-ID mode; bulk item upload needs series mode.")
     nums = data.get("product_number") or []
     if not nums:
-        raise RuntimeError("No product series configured.")
-    return nums[0]["id"], nums[0]["value"]
-
-
-def build_custom_fields(fields_in_pair: list) -> dict:
-    """Echo every field with empty value (read-only fields keep their existing value)."""
-    out: dict = {}
-    for sub in fields_in_pair:
-        items = sub if isinstance(sub, list) else [sub]
-        for f in items:
-            uuid = f.get("uuid")
-            if not uuid:
-                continue
-            out[uuid] = {
-                "data_type": f.get("data_type"),
-                "name": f.get("name"),
-                "value": f.get("value", "") if f.get("is_read_only") else "",
-            }
-    return out
+        raise RuntimeError("No product series configured on the account.")
+    prefix = nums[0].get("prefix")
+    if not prefix:
+        raise RuntimeError(f"First product series has no prefix: {nums[0]!r}")
+    return prefix
 
 
 def search_product(token: str, name: str, ptype: str) -> dict | None:
@@ -267,65 +423,8 @@ def search_product(token: str, name: str, ptype: str) -> dict | None:
     return None
 
 
-def pick_default_gst_tax_id(masters: dict) -> int | None:
-    """First GST tax id from the masters' tax pool, or None if the account has none.
-
-    Per knowledge/endpoints/product-change, the create payload's `taxes` field is a
-    SINGLE integer tax_id (despite the plural name). Downstream OC/SQ/SE scripts
-    (010, 011, …) require sell-side products to carry a GST mapping, so every item
-    created here gets the default GST attached.
-    """
-    tax_type_map = masters.get("tax_type") or {}
-    taxes = masters.get("taxes") or []
-    if not isinstance(taxes, list):  # defensive — backend returns {} when empty
-        return None
-    for tax in taxes:
-        tax_id = tax.get("id")
-        if tax_id is None:
-            continue
-        if tax_type_map.get(str(tax_id)) == "gst":
-            return int(tax_id)
-    return None
-
-
-def create_product(
-    token: str,
-    name: str,
-    ptype: str,
-    unit_name: str,
-    price: int | float,
-    tax_id: int | None,
-    custom_fields: dict,
-) -> dict:
-    series_id, itemid = fetch_first_series(token)
-    opening_stock = random.randint(STOCK_MIN, STOCK_MAX)
-    payload = {
-        "action_type": "create",
-        "product": {
-            "itemid": itemid,
-            "product_name": name,
-            "is_service": 0,
-            "type": ptype,
-            "unit": unit_name,
-            "category": None,
-            "quantity": opening_stock,
-            "price": price,
-            "hsn_code": None,
-            "taxes": tax_id,
-            "min_sl": None,
-            "max_sl": None,
-            "other_prices": {},
-            "custom_fields": custom_fields,
-            "product_no": series_id,
-        },
-        "units": [],
-        "product_name_check": True,
-    }
-    return _post(token, "/inventory/main-inventory/change_product/", payload)
-
-
 def validate_units_exist(token: str) -> None:
-    """Fail fast if any item references a UoM the company doesn't have."""
+    """Fail fast if any item references a UoM the company doesn't have (002 seeds them)."""
     masters = fetch_masters(token)
     available = {(u.get("unit_name") or "").strip() for u in masters.get("master_units") or []}
     missing = sorted({item["unit"] for item in ITEMS if item["unit"] not in available})
@@ -336,45 +435,74 @@ def validate_units_exist(token: str) -> None:
         )
 
 
+# --- Bulk create ------------------------------------------------------------
+
+
+def _error_reasons(data: dict) -> str:
+    """Extract per-row failure reasons from the server's error file (base64 xlsx)."""
+    dl = (data.get("download") or {}).get("data")
+    if not dl:
+        return "(no error file returned)"
+    try:
+        rows = read_xlsx_rows(base64.b64decode(dl))
+        msgs = [str(r[-1]).replace("\n", " ").strip() for r in rows[1:] if r and r[-1]]
+        return " | ".join(msgs[:10]) or "(error file had no messages)"
+    except Exception as exc:  # noqa: BLE001 — surface a readable hint, don't crash
+        return f"(could not parse error file: {exc})"
+
+
 def ensure_products(token: str) -> None:
-    """Create each missing product, attaching the company's default GST tax."""
+    """Create every missing product in one bulk Excel upload, attaching GST."""
     masters = fetch_masters(token)
-    default_tax_id = pick_default_gst_tax_id(masters)
-    if default_tax_id is None:
+    gst_rate = pick_default_gst_rate(masters)
+    if gst_rate is None:
         raise RuntimeError(
             "No GST tax master found on the company — downstream sales-doc scripts "
             "(010_, 011_) require sell-side products to carry a GST mapping. "
             "Enable GST 18% under Settings → Tax Options and re-run."
         )
-    log.info("Default GST tax_id for new products: %d", default_tax_id)
+    prefix = fetch_series_prefix(token)
+    log.info("Default GST rate %s%% | item-ID series prefix %r (server auto-numbers).", gst_rate, prefix)
 
+    to_create = []
     for item in ITEMS:
-        name = item["name"]
-        ptype = item["type"]
-        unit = item["unit"]
-        price = item["price"]
+        if search_product(token, item["name"], item["type"]):
+            log.info("Product already exists, skipping: %s (%s)", item["name"], item["type"])
+        else:
+            to_create.append(item)
 
-        if search_product(token, name, ptype):
-            log.info("Product already exists, skipping: %s (%s)", name, ptype)
-            continue
+    if not to_create:
+        log.info("All %d products already exist; nothing to upload.", len(ITEMS))
+        return
 
-        log.info(
-            "Creating product %s (%s, unit=%s, price=%s, tax_id=%d, stock=%d..%d)",
-            name, ptype, unit, price, default_tax_id, STOCK_MIN, STOCK_MAX,
+    rows: list[list[Any]] = [BULK_COLUMNS]
+    for item in to_create:
+        rows.append(
+            [prefix, item["name"], "Product", item["type"], item["unit"], item["price"], gst_rate]
         )
-        masters = fetch_masters(token)
-        custom_fields = build_custom_fields(masters.get("fields_in_pair") or [])
-        result = create_product(token, name, ptype, unit, price, default_tax_id, custom_fields)
-        # change_product has two mutually-exclusive success shapes inside `data`:
-        #   - no opening stock:   {"status": "success"}
-        #   - opening stock > 0:  {"inventory_approval_doc_id": <int>}  (no "status" key)
-        # Since every item here is seeded with opening stock, the second shape is the
-        # normal case — treat either as success.
-        data = result.get("data") or {}
-        if data.get("status") != "success" and "inventory_approval_doc_id" not in data:
-            raise RuntimeError(f"Product '{name}' create returned unexpected response: {result!r}")
-        if not search_product(token, name, ptype):
-            raise RuntimeError(f"Product '{name}' not searchable after create")
+    xlsx = build_xlsx(rows)
+
+    files = {
+        "input_excel": (
+            "Product_Add.xlsx",
+            xlsx,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ),
+        "upload_action": (None, "add"),
+        "ignore_duplicate_name": (None, "1"),
+        "preserve_existing": (None, "1"),
+        "update_cf_in_bom_items": (None, "1"),
+    }
+    log.info("Bulk-creating %d product(s) in a single upload...", len(to_create))
+    resp = _post_multipart(token, "/ops_dashboard/product_api/product_submit/", files)
+    data = resp.get("data") or {}
+    uploaded = data.get("no_of_items_uploaded")
+    if uploaded != len(to_create):
+        raise RuntimeError(
+            f"Bulk upload created {uploaded} of {len(to_create)} item(s). "
+            f"Server: {data.get('message')!r}. Row errors: {_error_reasons(data)}"
+        )
+    log.info("Bulk upload succeeded: %d product(s) created.", uploaded)
 
 
 # --- Main -------------------------------------------------------------------
@@ -396,7 +524,7 @@ def main() -> None:
     log.info("=== Validating UoMs ===")
     validate_units_exist(token)
 
-    log.info("=== Ensuring %d products (derived from BOM) ===", len(ITEMS))
+    log.info("=== Bulk-adding %d products (derived from BOM) ===", len(ITEMS))
     ensure_products(token)
 
     log.info("=== Done ===")
