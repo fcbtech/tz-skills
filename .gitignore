@@ -2,3 +2,5 @@
 freshdesk/scripts/.env
 outline/scripts/.env
 keka/scripts/.env
+slack/scripts/.env
+**/__pycache__/
