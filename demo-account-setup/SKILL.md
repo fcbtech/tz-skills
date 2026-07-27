@@ -383,10 +383,9 @@ guardrails:
 - **Collect results** — after they finish, gather each step's outcome (success, or the real error
   behind a non-zero exit) for the Step 7 report.
 
-Pick whatever mechanism fits the environment: a **shell worker-pool** (background jobs with a
-concurrency limit) is the portable default that works anywhere there's `bash` + `python3`; if the
-runtime exposes **sub-agents**, one per script is also fine. Below is *one illustrative* shell pool —
-adapt it freely, it is an example, not a mandated script:
+A **shell worker-pool** (background jobs with a concurrency limit) is the portable way to do this —
+it works anywhere there's `bash` + `python3`. Below is *one illustrative* pool — adapt it freely, it
+is an example, not a mandated script:
 
 ```bash
 cd scripts && mkdir -p logs
