@@ -55,10 +55,11 @@ LOGO_PATH = ""
 # are the heart of the product; let everything else bottom out fast.
 #
 # HARD CAP: the deduped unique-item set (every FG + sub-assembly + leaf + SCRAP
-# item, by name) must be <= 20. This is a server-load ceiling, not a guideline —
-# 003 aborts and creates nothing if the tree exceeds 20. Keep the tree focused and
-# reuse shared parts to stay under it. Scrap items count too, so budget them into
-# the 20. (The fan example below is 20 items: 18 material + 2 scrap.)
+# item, by name) must be <= 50. This is a server-load ceiling, not a target —
+# 003 aborts and creates nothing if the tree exceeds 50. It is headroom, not a
+# quota: still size the tree to the good, reuse shared parts, and don't pad it to
+# fill the 50. Scrap items count too, so budget them in. (The fan example below is
+# 20 items: 18 material + 2 scrap — well under the cap.)
 #
 # Typing (keeps the downstream PO/sales scripts happy, whatever the tree shape):
 #   - the TOP finished good is "Sell"

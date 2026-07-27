@@ -38,8 +38,8 @@ After a successful run the demo account will have:
    BOM nodes (finished goods, sub-assemblies, and bought leaves) is created on the account,
    deduped by name, at a per-unit price of `price / qty`. The item count is **not fixed** — it
    flexes with the good being modelled (a simple product seeds a handful of items; a richer
-   multi-level one seeds more) — but is **hard-capped at 20 unique items**, a server-load ceiling
-   `003` enforces (it aborts before creating anything if the tree exceeds 20). The top finished good
+   multi-level one seeds more) — but is **hard-capped at 50 unique items**, a server-load ceiling
+   `003` enforces (it aborts before creating anything if the tree exceeds 50). The top finished good
    is typed `"Sell"`; sub-assemblies and bought leaves are `"Both"`, so there are always ample
    sell-capable and buy-capable items for the downstream document steps.
 5. Three Order Confirmation flows (sales side). Each script picks its line items **at random**
@@ -240,18 +240,21 @@ front of you. Design the tree like this:
 3. **Go deep only where it matters.** A real BOM is deep in the **1–2 branches that are the heart
    of the product** and flat everywhere else — a fan's motor nests 3 levels, but its carton and
    screws hang straight off the top. Don't decompose every branch.
-4. **Bound it as a window, not a quota — under a hard ceiling.** Typically **~2–3 levels** deep and
-   a handful of BOMs, *scaling with the good*: a simple product (a wooden stool) may be 1–2 levels
-   and 2 BOMs; a complex one (a fan) 3 levels and 3–5 BOMs. Stop at ~3 levels; when a part is
-   borderline make-or-buy near that edge, call it **bought**.
+4. **Bound it as a window, not a quota — under a hard ceiling.** Size the tree to the good, never pad
+   it to hit a number. Typically **~2–4 levels** deep, *scaling with the good*: a simple product (a
+   wooden stool) may be 1–2 levels and 2 BOMs; a complex one (a fan, a battery, an appliance) 3–4
+   levels and several BOMs. The higher ceiling (below) leaves room for a genuinely rich good to
+   decompose fully — use it only when the product really has that structure; when a part is borderline
+   make-or-buy, call it **bought**.
 
-   > **HARD CAP — the deduped unique-item set must be ≤ 20** (finished good + every sub-assembly +
+   > **HARD CAP — the deduped unique-item set must be ≤ 50** (finished good + every sub-assembly +
    > every leaf + every **`[[BOM.scrap]]`** byproduct, counted by name). This is a server-load
-   > ceiling, **not** a guideline: `003` counts the items and **aborts before creating anything** if
-   > the tree resolves to more than 20, so it can never be exceeded. Design under it — keep the tree
-   > focused (deep in 1–2 branches, the rest flat/bought, reuse shared parts) and **budget scrap items
-   > into the 20**. If `003` rejects the tree for exceeding 20, **trim it** (fewer or shallower
-   > sub-assemblies, prune or merge leaf materials or scrap rows) and re-run from `003`.
+   > ceiling, **not** a target: `003` counts the items and **aborts before creating anything** if
+   > the tree resolves to more than 50, so it can never be exceeded. It is headroom, not a quota —
+   > still design the tree to the good (deep in the branches that matter, the rest flat/bought, reuse
+   > shared parts) and **budget scrap items into the 50**. If `003` rejects the tree for exceeding 50,
+   > **trim it** (fewer or shallower sub-assemblies, prune or merge leaf materials or scrap rows) and
+   > re-run from `003`.
 
 **Order the blocks bottom-up.** A child's `[[BOM]]` block **must appear before** the parent that
 consumes it, so it is published first: list the deepest sub-assemblies first, then the ones above
@@ -297,7 +300,7 @@ itself:
   machined earns its own charges; a trivial one may earn none). Omit the table ⇒ zero charges.
 - **`[[BOM.scrap]]`** — optional byproduct rows (`name`, `qty`, `unit`, `price`, `type`), one per
   scrap the process yields. **Scrap is an inventory item** — `003` creates it and **it counts toward
-  the 20-item cap**, so budget scrap into the tree (deep branches that cut/wind/machine are where
+  the 50-item cap**, so budget scrap into the tree (deep branches that cut/wind/machine are where
   scrap comes from: offcuts, turnings, trims, rejects). Its **per-unit price (`price / qty`) is the
   recovery value** credited against the FG's cost — the scrap row itself carries no price. Two
   flavours, agent's choice per scrap:
@@ -310,7 +313,7 @@ itself:
   simply omit it.
 
 Keep both **consistent with the good and under the cap**: material items + scrap items together must
-stay ≤ 20 (`003` still aborts above 20). The fan in `data.md.template` shows the shape — labour-heavy
+stay ≤ 50 (`003` still aborts above 50). The fan in `data.md.template` shows the shape — labour-heavy
 charges on the wound stator, assembly charges on the motor, assembly+packaging charges on the fan,
 copper scrap at the stator and sheet-metal scrap at final assembly (20 items: 18 material + 2 scrap).
 
@@ -513,13 +516,13 @@ backend error worth reporting.
    account — there is no separate `INVENTORY_ITEMS` config. **Size the BOM to the good, not to a
    fixed count** (see "Author the BOM tree"): decompose it into a realistic multi-level tree —
    made-in-house parts become sub-assemblies with their own BOMs, bought parts are leaves — deep in
-   the 1–2 branches that matter, ~2–3 levels, scaling with the product. Type the **top finished
+   the 1–2 branches that matter, ~2–4 levels, scaling with the product. Type the **top finished
    good `"Sell"`** and **every sub-assembly and bought leaf `"Both"`**; that always clears the
    downstream minimums (≥3 sell-side, ≥2 buyable). Optionally give each BOM **realistic costing** —
    `[BOM.charges]` and `[[BOM.scrap]]` byproducts (see "Realistic costing") — derived from how the
-   good is made, never hard-coded. **Never exceed the hard cap of 20 unique items**, counting
+   good is made, never hard-coded. **Never exceed the hard cap of 50 unique items**, counting
    material **and scrap** items — `003` enforces it and aborts the run (creating nothing) if the
-   deduped set resolves to more than 20.
+   deduped set resolves to more than 50.
 5. **Always confirm the full seed-value summary before execution.** Print every value about to be
    written to `data.md`, mark user-supplied vs. default, and wait for explicit go-ahead.
 6. **Never run the scripts out of order or in parallel.** Each step assumes the prior step's

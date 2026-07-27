@@ -93,7 +93,7 @@ _REQUIRED_STR_KEYS = ("name", "type", "unit")
 # this cap — so it can never be breached regardless of what the BOM tree in data.md
 # contains. The agent designs the tree to stay under it (see SKILL.md); this is the
 # guarantee that it always does.
-MAX_ITEMS = 20
+MAX_ITEMS = 50
 
 
 def _is_number(value: Any) -> bool:
