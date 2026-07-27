@@ -340,89 +340,126 @@ Write the confirmed values into a single fenced ```toml block at `scripts/data.m
 `.py` files. Preserve the section comments from the template. The loader regex rejects anything
 other than a single fenced toml block.
 
-### Step 6 — Run scripts in order
+### Step 6 — Run the scripts (prerequisites serial, documents in parallel)
 
-Run each script with `python3`, **strictly in numeric order**. Do not parallelise. Scripts
-`000`–`003` are **hard prerequisites** — each depends on the previous step's server-side state
-(account → counter-parties → units → inventory items), so do not skip them. **`004_create_bom.py`
-runs immediately after the inventory step (`003_…`)** because the BOM relies on the inventory items
-and units that 003 seeded. **However, the BOM is NOT a dependency for any later script** — the
-downstream sales / purchase / enquiry / quotation scripts (`005`–`013`) build their documents from
-the inventory items (`003`) and counter-parties (`001`) only, never from the BOM. So a BOM failure
-must not stop them (see **"BOM creation is non-fatal"** below).
+The run splits into two phases. **Phase 1 (`000`–`003`) is strictly serial** — each step depends on
+the previous step's server-side state (account → counter-parties → units → inventory items), so it
+runs in numeric order and **halts on any failure**. **Phase 2 (`004`–`013`) runs concurrently** —
+these steps are mutually independent (none reads another's output; each builds its own documents from
+the inventory items `003` seeded and the counter-parties `001` created), so they fan out under a
+bounded worker pool instead of running one-at-a-time. **`004_create_bom.py` no longer needs to run
+"immediately after" 003** — it only needs 003 to have finished, which Phase 1 guarantees before Phase
+2 starts. The BOM is still not a dependency for any later step, so its outcome never affects the rest
+of Phase 2 (see **failure tiers** below).
 
+**Phase 1 — prerequisites, strictly serial (halt on failure):**
+
+```bash
+for s in 000_account_setup.py 001_add_network_companies.py \
+         002_add_master_units.py 003_add_inventory_items.py; do
+  python3 "scripts/$s" || { echo "PREREQ FAILED: $s — halting"; exit 1; }
+  sleep 3
+done
 ```
-python3 scripts/000_account_setup.py
-python3 scripts/001_add_network_companies.py
-python3 scripts/002_add_master_units.py
-python3 scripts/003_add_inventory_items.py
-python3 scripts/004_create_bom.py
-python3 scripts/005_create_oc_first_buyer.py
-python3 scripts/006_create_oc_second_buyer_with_challan_invoice.py
-python3 scripts/007_create_oc_invoice_split_challans.py
-python3 scripts/008_create_po_inward_invoice.py
-python3 scripts/009_create_po_inward_60pct_second_seller.py
-python3 scripts/010_create_po_split_inwards_qirs_prdc_invoice.py
-python3 scripts/011_create_three_sales_enquiries_with_sq.py
-python3 scripts/012_create_three_sales_quotations_with_deal_status.py
-python3 scripts/013_upload_company_logo.py
+
+If any of `000`–`003` exits non-zero, **stop** — show the failing script's stderr/stdout tail and do
+not launch Phase 2. Nothing downstream can work without the shared prerequisite state.
+
+**Phase 2 — document steps, run concurrently (each non-fatal):**
+
+Fan `004`–`013` out under a **bounded worker pool of at most 4 concurrent scripts**. The cap matters:
+the scripts do no rate-limit handling of their own, so the pool size is *your* primary throttle guard
+— four in flight keeps the pipe full without tipping the backend into 429s. Each script writes its own
+log so output doesn't interleave, and every step is **non-fatal** — a failure is logged and skipped,
+never aborting the others.
+
+```bash
+cd scripts && mkdir -p logs
+MAXJOBS=4
+declare -A PID2STEP
+launch() {   # block until a worker frees up, then start the step in the background
+  while (( $(jobs -rp | wc -l) >= MAXJOBS )); do sleep 1; done
+  python3 "$1" > "logs/${1%.py}.log" 2>&1 &
+  PID2STEP[$!]="$1"
+}
+for s in 004_create_bom.py 005_create_oc_first_buyer.py \
+         006_create_oc_second_buyer_with_challan_invoice.py \
+         007_create_oc_invoice_split_challans.py 008_create_po_inward_invoice.py \
+         009_create_po_inward_60pct_second_seller.py \
+         010_create_po_split_inwards_qirs_prdc_invoice.py \
+         011_create_three_sales_enquiries_with_sq.py \
+         012_create_three_sales_quotations_with_deal_status.py \
+         013_upload_company_logo.py; do
+  launch "$s"
+done
+for pid in "${!PID2STEP[@]}"; do
+  if wait "$pid"; then echo "OK   ${PID2STEP[$pid]}"
+  else echo "SKIP ${PID2STEP[$pid]} (exit $? — see logs/${PID2STEP[$pid]%.py}.log)"; fi
+done
 ```
+
+After the pool drains, read each `logs/NNN_*.log` to collect the per-step outcome (success, or the
+real error behind a non-zero exit) for the Step 7 report.
 
 `013_upload_company_logo.py` is a no-op when `LOGO_PATH` is empty in `data.md` — it logs that the
-upload was skipped and exits `0`, so it is safe to always include in the run order.
+upload was skipped and exits `0`, so it is safe to always include in the fan-out.
 
 **Throttle-safe pacing — YOU (the agent) manage this, not the scripts.** The scripts make raw API
-calls and do **no** rate-limit handling of their own; pacing and recovery are your job. Leave a
-**few seconds between scripts** (≈3s is a fine default) to keep the burst under the backend's
-per-minute limit. Use your judgment: if you start seeing throttling, **space the scripts out more**;
-if everything's flowing, a short spacer is enough.
+calls and do **no** rate-limit handling of their own; pacing and recovery are your job. In **Phase 1**
+leave a **few seconds between the serial steps** (≈3s is a fine default). In **Phase 2** the
+**concurrency cap is the pacing knob** — the 4-worker limit keeps the burst under the backend's
+per-minute ceiling. Use your judgment: if you start seeing throttling, **lower the cap** (`MAXJOBS=2`,
+even `1`) and/or add a short stagger between launches; if everything's flowing, 4 is fine. Do **not**
+raise the cap above 4 to go faster — that's the fastest way to trip throttling.
 
 **Handling throttle / rate-limit errors — react intelligently.** The Tranzact backend rate-limits
-bursts of calls, usually surfacing as **HTTP 429** (or a body mentioning "throttled" / "rate limit"
-/ "too many requests"), most often around the 5th–6th script. When a script fails this way, do
-**not** treat it as fatal — reason about it and recover:
+bursts of calls, usually surfacing as **HTTP 429** (or a body mentioning "throttled" / "rate limit" /
+"too many requests"). It never aborts the run — reason about it and recover:
 
-1. **Wait the right amount.** Look for a hint in the response — a `Retry-After` header, a
-   `retry_after` / `wait_seconds` field, or a message like `"available in 42 seconds"` — and wait
-   that long (round up, +2s). No hint → wait ~30s. If it's already thrown twice, wait longer.
-2. **Re-run the same script** (don't skip ahead), then continue. Note that scripts aren't
-   idempotent, so a re-run redoes that script's work — prefer to *avoid* throttling by pacing over
-   leaning on re-runs, and only re-run the one script that failed.
-3. **Adapt.** If throttling keeps happening, increase the gap between scripts for the rest of the
-   run. If the *same* script throttles to failure twice in a row even after waiting, stop and report
-   it — the backend may be degraded.
+- **In Phase 1** (serial): when a prerequisite fails this way, wait the right amount — look for a hint
+  in the response (`Retry-After` header, a `retry_after` / `wait_seconds` field, or a message like
+  `"available in 42 seconds"`; round up +2s, or ~30s with no hint, longer if it's already thrown
+  twice) — then **re-run that same prerequisite** and continue. Scripts aren't idempotent, so re-runs
+  redo work; prefer to *avoid* throttling by pacing. If the same prerequisite throttles to failure
+  twice in a row after waiting, stop and report — the backend may be degraded.
+- **In Phase 2** (parallel): a 429 shows up as one step's non-zero exit in its log. Treat it as one
+  more non-fatal skip (see below) — **don't re-run it inside the pool** (re-running a non-idempotent
+  step mid-fan-out risks duplicate documents). Instead, if throttling appears, **lower `MAXJOBS` and
+  let the pool finish**, then optionally re-run any throttled step **alone** afterwards. If throttling
+  is pervasive, drop the cap to `1` (effectively serial) for the rest of the run.
 
 (Rationale: this is a skill — keep the scripts as lean, deterministic automations and let the agent
 handle situational things like rate-limiting with judgment, rather than hard-coding retry logic.)
 
 **Two failure tiers — prerequisites (`000`–`003`) are fatal; document steps (`004`–`013`) are each
-non-fatal.** The run splits cleanly in two:
+non-fatal.** The run splits cleanly along the two phases:
 
-- **`000`–`003` are hard prerequisites** (account → counter-parties → units → inventory items). Every
-  later step reads this shared state, so if any of `000`–`003` fails, **halt** — show the failing
-  script's stderr/stdout tail and stop. Nothing downstream can work without them.
-- **`004`–`013` are mutually independent.** Each one builds its own documents (BOM, OCs, POs,
-  Inwards, Invoices, QIRs, SEs, SQs, logo) from the shared items (`003`) and counter-parties (`001`)
-  — **none of them reads another's output** (verified live: OC, PO, Inward, Invoice and SQ all
+- **Phase 1 (`000`–`003`) is a hard prerequisite chain** (account → counter-parties → units →
+  inventory items). Every later step reads this shared state, so if any of `000`–`003` fails, **halt**
+  — show the failing script's stderr/stdout tail and stop. Nothing downstream can work without them.
+- **Phase 2 (`004`–`013`) steps are mutually independent.** Each one builds its own documents (BOM,
+  OCs, POs, Inwards, Invoices, QIRs, SEs, SQs, logo) from the shared items (`003`) and counter-parties
+  (`001`) — **none of them reads another's output** (verified live: OC, PO, Inward, Invoice and SQ all
   create fine on an account where the BOM/QIR/SE steps never ran). So a failure in one **must not**
-  abort the others.
+  affect the others, and running them concurrently is safe.
 
-Therefore, **whenever any of `004`–`013` exits non-zero for a reason other than throttling**
-(examples: **HTTP 426 `PremiumFeatureException`** — a premium feature is off, keys `bom`/`grn-qir`/
-`ncd` for `004`/`010`/`011`; **HTTP 500 `"Something went wrong!"`** — a backend error, seen on `004`
-`/production/bom/create/` in production; a timeout; anything else):
+Therefore, **whenever any Phase 2 step exits non-zero for any reason** (examples: **HTTP 426
+`PremiumFeatureException`** — a premium feature is off, keys `bom`/`grn-qir`/`ncd` for
+`004`/`010`/`011`; **HTTP 500 `"Something went wrong!"`** — a backend error, seen on `004`
+`/production/bom/create/` in production; a throttling 429; a timeout; anything else):
 
-1. Log the note **prominently, with the real error** — e.g. *"⚠️ Step `004_create_bom.py` FAILED
-   (HTTP 500 — Something went wrong!) — skipped. The remaining steps don't depend on it; continuing.
-   Re-run this step later once the cause is resolved."* Show the actual status code / message so the
-   failure is **visible, not silently swallowed**.
-2. **Continue with the next script** (resume the normal 3-second cadence). Do **not** re-run it.
+1. Log the note **prominently, with the real error** read from that step's `logs/NNN_*.log` — e.g.
+   *"⚠️ Step `004_create_bom.py` FAILED (HTTP 500 — Something went wrong!) — skipped. The remaining
+   steps don't depend on it. Re-run this step later once the cause is resolved."* Show the actual
+   status code / message so the failure is **visible, not silently swallowed**.
+2. Let the rest of the Phase 2 pool finish; the failed step is simply skipped. Do **not** re-run it
+   inside the fan-out (a throttled step can be re-run **alone** afterwards — see throttle handling).
 3. Remember which steps were skipped so they all surface in the Step 7 report.
 
-So the only thing that halts the run is a failure in a **prerequisite** (`000`–`003`). A
-**throttling** failure isn't fatal either — you wait and re-run that script (see throttle handling
-above). Any `004`–`013` failure is skipped, logged, and reported — you get as much of the demo as
-the backend allows, never an empty account.
+So the only thing that halts the run is a failure in a **Phase 1 prerequisite** (`000`–`003`), or a
+Phase 1 throttling failure that keeps recurring after waiting. Any Phase 2 (`004`–`013`) failure is
+skipped, logged, and reported — you get as much of the demo as the backend allows, never an empty
+account.
 
 If `requests` is somehow missing from the sandbox (shouldn't happen, but possible on certain
 locked-down deployments), `pip install requests` inside the sandbox and retry. Do **not** ask the
@@ -480,8 +517,11 @@ backend error worth reporting.
    `003` enforces it and aborts the run (creating nothing) if the tree resolves to more than 20.
 5. **Always confirm the full seed-value summary before execution.** Print every value about to be
    written to `data.md`, mark user-supplied vs. default, and wait for explicit go-ahead.
-6. **Never run the scripts out of order or in parallel.** Each step assumes the prior step's
-   server-side state.
+6. **Phase 1 (`000`–`003`) runs strictly in numeric order, never in parallel** — each step assumes
+   the prior step's server-side state. **Phase 2 (`004`–`013`) runs concurrently** under a bounded
+   pool (**≤4 workers**) — these steps are mutually independent and read only the shared state from
+   `001`/`003`, never each other's output. Never reorder Phase 1, never promote a Phase 2 step ahead
+   of Phase 1, and never raise the Phase 2 cap above 4 (the cap is the throttle guard).
 7. **Never reuse an email.** Signup fails on duplicates. Always confirm with the teammate.
 8. **Never ask the teammate to run code or install anything locally.** All execution happens inside
    the sandbox. Their job is to chat.
