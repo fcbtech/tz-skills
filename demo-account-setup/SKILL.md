@@ -365,17 +365,32 @@ done
 If any of `000`–`003` exits non-zero, **stop** — show the failing script's stderr/stdout tail and do
 not launch Phase 2. Nothing downstream can work without the shared prerequisite state.
 
-**Phase 2 — document steps, run concurrently (each non-fatal):**
+**Phase 2 — document steps, run them in parallel (each non-fatal):**
 
-Fan `004`–`013` out under a **bounded worker pool of at most 4 concurrent scripts**. The cap matters:
-the scripts do no rate-limit handling of their own, so the pool size is *your* primary throttle guard
-— four in flight keeps the pipe full without tipping the backend into 429s. Each script writes its own
-log so output doesn't interleave, and every step is **non-fatal** — a failure is logged and skipped,
-never aborting the others.
+`004`–`013` don't depend on each other, so run them **in parallel** instead of one-at-a-time — that's
+where the time saving is. **How** you parallelise is *your* call as the agent, matched to what the
+runtime gives you; the skill sets the goal and the guardrails, it does not hard-code a runner. The
+guardrails:
+
+- **Keep it bounded** — a handful in flight at once (≈4 is a sensible start), not all ten. This cap is
+  your **throttle guard**: the scripts do no rate-limit handling of their own, so limiting how many hit
+  the backend at once is what keeps you under the 429 ceiling.
+- **Each step is independent and non-fatal** — capture each one's output/exit separately so a failure
+  is logged and skipped, never aborting the others.
+- **Watch and adapt** — if throttling shows up, lower how many run at once (down to `1` = serial if
+  needed); re-run any throttled step **on its own afterwards**, never mid-batch (scripts aren't
+  idempotent).
+- **Collect results** — after they finish, gather each step's outcome (success, or the real error
+  behind a non-zero exit) for the Step 7 report.
+
+Pick whatever mechanism fits the environment: a **shell worker-pool** (background jobs with a
+concurrency limit) is the portable default that works anywhere there's `bash` + `python3`; if the
+runtime exposes **sub-agents**, one per script is also fine. Below is *one illustrative* shell pool —
+adapt it freely, it is an example, not a mandated script:
 
 ```bash
 cd scripts && mkdir -p logs
-MAXJOBS=4
+MAXJOBS=4                     # tune down if you see throttling
 declare -A PID2STEP
 launch() {   # block until a worker frees up, then start the step in the background
   while (( $(jobs -rp | wc -l) >= MAXJOBS )); do sleep 1; done
@@ -397,9 +412,6 @@ for pid in "${!PID2STEP[@]}"; do
   else echo "SKIP ${PID2STEP[$pid]} (exit $? — see logs/${PID2STEP[$pid]%.py}.log)"; fi
 done
 ```
-
-After the pool drains, read each `logs/NNN_*.log` to collect the per-step outcome (success, or the
-real error behind a non-zero exit) for the Step 7 report.
 
 `013_upload_company_logo.py` is a no-op when `LOGO_PATH` is empty in `data.md` — it logs that the
 upload was skipped and exits `0`, so it is safe to always include in the fan-out.
@@ -518,10 +530,11 @@ backend error worth reporting.
 5. **Always confirm the full seed-value summary before execution.** Print every value about to be
    written to `data.md`, mark user-supplied vs. default, and wait for explicit go-ahead.
 6. **Phase 1 (`000`–`003`) runs strictly in numeric order, never in parallel** — each step assumes
-   the prior step's server-side state. **Phase 2 (`004`–`013`) runs concurrently** under a bounded
-   pool (**≤4 workers**) — these steps are mutually independent and read only the shared state from
-   `001`/`003`, never each other's output. Never reorder Phase 1, never promote a Phase 2 step ahead
-   of Phase 1, and never raise the Phase 2 cap above 4 (the cap is the throttle guard).
+   the prior step's server-side state. **Phase 2 (`004`–`013`) runs in parallel, bounded** — these
+   steps are mutually independent and read only the shared state from `001`/`003`, never each other's
+   output. Keep only a handful running at once (≈4) as a throttle guard, and use your judgment (see
+   Step 6) — the skill sets the goal, not a fixed runner. Never reorder Phase 1, and never promote a
+   Phase 2 step ahead of Phase 1.
 7. **Never reuse an email.** Signup fails on duplicates. Always confirm with the teammate.
 8. **Never ask the teammate to run code or install anything locally.** All execution happens inside
    the sandbox. Their job is to chat.
