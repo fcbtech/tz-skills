@@ -11,10 +11,15 @@ Logs into the account identified by EMAIL/PASSWORD in data.md and:
      number series, and resolves the WIP store the header requires
      (`doc_wip_store` — base-data default, else a WIP-typed store, else the
      main store). Omitting `doc_wip_store` makes create 500.
-  4. POSTs /production/bom/create/ with `save_action=save_and_publish` and
-     `other_charges` zeroed across all four fixed buckets (data.md does not
-     declare per-bucket amounts).
-  5. Verifies the persisted BOM by reading /production/general/view/.
+  4. POSTs /production/bom/create/ with `save_action=save_and_publish`, filling
+     the four fixed `other_charges` buckets from the block's optional
+     `[BOM.charges]` table (labour/machinery/electricity/other) and the `scrap`
+     array from its optional `[[BOM.scrap]]` rows — so the finished good carries a
+     realistic cost: rolled-up material + charges − scrap recovery (a scrap row's
+     recovery value is the scrap item's own master price × qty; the row itself
+     carries no price). Both are optional; omitted ⇒ zero charges / no scrap.
+  5. Verifies the persisted BOM by reading /production/general/view/ (name, FG,
+     raw-material count, and — when declared — the charge amounts and scrap rows).
 
 Multi-level (nested child-BOM) support
 ---------------------------------------
@@ -498,15 +503,54 @@ def attach_child_bom(token: str, rm_row: dict[str, Any], item_id: int, unit_id: 
     return child
 
 
-def build_other_charges_zero() -> dict[str, dict[str, Any]]:
-    return {key: {"charges": 0, "comment": "", "classification": label}
+# data.md [BOM.charges] keys -> backend other_charges bucket keys. The four buckets
+# are FIXED (backend keys them, not by label); data.md exposes them by friendly name.
+CHARGE_KEY_MAP = {
+    "labour": "labour",
+    "machinery": "machinery",
+    "electricity": "electricity",
+    "other": "other_charges",
+}
+
+
+def build_other_charges(charges_spec: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    """Build the fixed four-bucket other_charges dict, filling amounts from an
+    optional ``[BOM.charges]`` table (labour/machinery/electricity/other — INR for
+    the FG qty). Any subset may be given; omitted buckets stay 0. These add on top
+    of the rolled-up raw-material cost to make the FG's cost realistic.
+    """
+    amounts: dict[str, float] = {bucket: 0 for bucket, _ in OTHER_CHARGES_BUCKETS}
+    for raw_key, value in (charges_spec or {}).items():
+        bucket = CHARGE_KEY_MAP.get(str(raw_key).strip().lower())
+        if bucket is None:
+            sys.exit(f"[BOM.charges] has unknown key {raw_key!r}; valid keys: {sorted(CHARGE_KEY_MAP)}")
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+            sys.exit(f"[BOM.charges].{raw_key} must be a non-negative number, got {value!r}")
+        amounts[bucket] = value
+    return {key: {"charges": amounts[key], "comment": "", "classification": label}
             for key, label in OTHER_CHARGES_BUCKETS}
+
+
+def build_scrap_row(product: dict[str, Any], unit: dict[str, Any], quantity: float) -> dict[str, Any]:
+    """A scrap byproduct row. Same enriched product shape as an RM row but with
+    ``cost_alloc`` 0 — scrap carries no manufacturing-cost share; its recovery
+    VALUE is the scrap item's own master price × quantity, which the backend
+    credits against the finished good's cost. (Verified accepted by
+    /production/bom/create/ and persisted by the view.)"""
+    row = base_product_row(product, unit, quantity)
+    row["cost_alloc"] = 0
+    return row
 
 
 def build_create_payload(base_data: dict[str, Any], store_id: int, wip_store_id: int,
                          series_list: list[dict[str, Any]],
                          fg_row: dict[str, Any], rm_rows: list[dict[str, Any]],
-                         bom_name: str) -> dict[str, Any]:
+                         bom_name: str,
+                         other_charges: dict[str, Any] | None = None,
+                         scrap_rows: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    scrap_rows = scrap_rows or []
+    if other_charges is None:
+        other_charges = build_other_charges(None)
     doc_data = base_data["docData"]
     pdd_defaults = doc_data.get("primary_document_details") or {}
     custom_fields = flatten_doc_custom_fields(base_data)
@@ -538,14 +582,14 @@ def build_create_payload(base_data: dict[str, Any], store_id: int, wip_store_id:
             "raw_materials": rm_rows,
             "routing": {},
             "routing_change_history": [],
-            "scrap": [],
-            "other_charges": build_other_charges_zero(),
+            "scrap": scrap_rows,
+            "other_charges": other_charges,
             "action_details": doc_data["action_details"],
             "doc_title": "Bill of Material",
             "doc_type": BOM_DOC_TYPE_STR,
             "doc_type_id": BOM_DOC_TYPE_ID,
             "sum_rm_quantity": 0,
-            "sum_scrap_quantity": 0,
+            "sum_scrap_quantity": sum(float(r.get("quantity") or 0) for r in scrap_rows),
         },
         "is_draft": False,
         "action": "create",
@@ -623,9 +667,22 @@ def main() -> None:
 
             rm_rows.append(rm_row)
 
-        payload = build_create_payload(base_data, store_id, wip_store_id, series_list, fg_row, rm_rows, bom_name)
-        log.info("Creating BOM %r with FG %r, %d RM(s), %d linked child BOM(s).",
-                 bom_name, fg_spec["name"], len(rm_rows), len(linked_rm_item_ids))
+        # --- Realistic costing: labour/machinery/electricity/other charges + scrap ---
+        other_charges = build_other_charges(bom_spec.get("charges"))
+        scrap_rows: list[dict[str, Any]] = []
+        for s_spec in bom_spec.get("scrap") or []:
+            log.info("Resolving scrap %r (qty %s %s).", s_spec["name"], s_spec["qty"], s_spec["unit"])
+            s_product = find_product_by_name(token, s_spec["name"])
+            s_unit = pick_unit(s_product, s_spec["unit"])
+            scrap_rows.append(build_scrap_row(s_product, s_unit, float(s_spec["qty"])))
+
+        payload = build_create_payload(base_data, store_id, wip_store_id, series_list, fg_row, rm_rows,
+                                       bom_name, other_charges=other_charges, scrap_rows=scrap_rows)
+        total_charges = sum(b["charges"] for b in other_charges.values())
+        log.info("Creating BOM %r with FG %r, %d RM(s), %d linked child BOM(s), "
+                 "charges=%s, %d scrap row(s).",
+                 bom_name, fg_spec["name"], len(rm_rows), len(linked_rm_item_ids),
+                 total_charges, len(scrap_rows))
         create_resp = _post(token, "/production/bom/create/", payload)
 
         if create_resp.get("status") != 1:
@@ -666,6 +723,29 @@ def main() -> None:
             if not match or not (match.get("child_bom_id") or 0):
                 raise RuntimeError(
                     f"Linked RM item_id={item_id} did not persist a child_bom_id in the BOM view."
+                )
+        # Costing persisted as sent: each declared charge bucket + the scrap rows.
+        # The backend normalizes other_charges to PER-UNIT — it divides each charge
+        # by the FG quantity before storing — so the view returns charge / FG-qty,
+        # not the as-sent total. Compare against that per-unit value; otherwise a BOM
+        # with charges and FG qty > 1 fails here AFTER it was already created fine.
+        if bom_spec.get("charges"):
+            fg_qty = float(fg_spec["qty"]) or 1.0
+            view_oc = view.get("other_charges") or {}
+            for bucket, _label in OTHER_CHARGES_BUCKETS:
+                sent = float(other_charges[bucket]["charges"])
+                expected = sent / fg_qty
+                got = float((view_oc.get(bucket) or {}).get("charges") or 0)
+                if abs(got - expected) > 0.001:
+                    raise RuntimeError(
+                        f"BOM other_charges[{bucket}] mismatch — expected per-unit {expected} "
+                        f"(sent {sent} for FG qty {fg_qty}), view returned {got}."
+                    )
+        if scrap_rows:
+            view_scrap = view.get("scrap") or []
+            if len(view_scrap) != len(scrap_rows):
+                raise RuntimeError(
+                    f"BOM view returned {len(view_scrap)} scrap row(s); expected {len(scrap_rows)}."
                 )
         created_bom_ids.append(int(bom_id))
 

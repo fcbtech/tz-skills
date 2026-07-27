@@ -54,10 +54,12 @@ LOGO_PATH = ""
 # consumes it (so it is published first). Go deep only in the 1–2 branches that
 # are the heart of the product; let everything else bottom out fast.
 #
-# HARD CAP: the deduped unique-item set (every FG + sub-assembly + leaf, by name)
-# must be <= 20. This is a server-load ceiling, not a guideline — 003 aborts and
-# creates nothing if the tree exceeds 20. Keep the tree focused and reuse shared
-# parts to stay under it. (The fan example below is 18 items.)
+# HARD CAP: the deduped unique-item set (every FG + sub-assembly + leaf + SCRAP
+# item, by name) must be <= 50. This is a server-load ceiling, not a target —
+# 003 aborts and creates nothing if the tree exceeds 50. It is headroom, not a
+# quota: still size the tree to the good, reuse shared parts, and don't pad it to
+# fill the 50. Scrap items count too, so budget them in. (The fan example below is
+# 20 items: 18 material + 2 scrap — well under the cap.)
 #
 # Typing (keeps the downstream PO/sales scripts happy, whatever the tree shape):
 #   - the TOP finished good is "Sell"
@@ -66,8 +68,29 @@ LOGO_PATH = ""
 # A sub-assembly must use the SAME unit and price wherever it appears (as its own
 # FG and as a child line). Reused names collapse to one inventory item.
 #
-# The worked example below is a 400mm table fan: 3 BOMs, 3 levels, 18 items —
-# deep through the motor (Fan -> Motor Assembly -> Stator), flat elsewhere.
+# REALISTIC COSTING (optional, per BOM) — make each finished good's cost real:
+#   rolled-up material  +  labour/machinery/electricity/other charges
+#                       −  scrap recovery value.
+#   [BOM.charges]   an optional table on a [[BOM]] block with any subset of
+#                   labour / machinery / electricity / other (INR for the FG qty).
+#                   Derive them from how THAT good is made — a forged/machined part
+#                   is machinery-heavy, a stitched/assembled one labour-heavy; a
+#                   simple pack barely any. Not fixed numbers.
+#   [[BOM.scrap]]   optional byproduct rows (name, qty, unit, price, type). SCRAP IS
+#                   AN INVENTORY ITEM (003 creates it; it counts toward the cap) —
+#                   its per-unit price (price/qty) IS the recovery value credited
+#                   against the FG cost. A scrap can be sold (recovered) OR reused
+#                   as an input: to reuse it, give it the SAME name as an [[BOM.RM]]
+#                   somewhere (names dedup to one item), so the byproduct feeds back
+#                   into manufacturing. Derive scrap from the real offcuts/turnings
+#                   of making the good; some goods produce none — then omit it.
+#   Both are OPTIONAL: omit [BOM.charges] ⇒ zero charges; omit [[BOM.scrap]] ⇒ no
+#   scrap. See SKILL.md > "Realistic costing" for the full method.
+#
+# The worked example below is a 400mm table fan: 3 BOMs, 3 levels, 20 items
+# (18 material + 2 scrap) — deep through the motor (Fan -> Motor Assembly ->
+# Stator), flat elsewhere, with realistic per-BOM charges and scrap byproducts
+# (copper offcuts at the stator, sheet-metal scrap at final assembly).
 # (For a quick, non-realistic seed instead, a FLAT set of single-level BOMs is a
 # supported option — see SKILL.md.)
 
@@ -79,6 +102,13 @@ unit = "Nos"
 name = "Stator 400mm"
 price = 480
 type = "Both"
+
+# Winding is manual + a winding machine; small electricity draw. (material ~459)
+[BOM.charges]
+labour = 55
+machinery = 25
+electricity = 12
+other = 5
 
 [[BOM.RM]]
 qty = 0.35
@@ -101,6 +131,14 @@ name = "Insulation Paper"
 price = 12
 type = "Both"
 
+# Copper offcuts from winding — sold as scrap. Recovery = price/qty = 500/Kg.
+[[BOM.scrap]]
+qty = 0.03
+unit = "Kg"
+name = "Copper Scrap"
+price = 15
+type = "Both"
+
 # ---- Level 1: MOTOR ASSEMBLY — assembled from the stator + bought parts ------
 [[BOM]]
 [BOM.FG]
@@ -109,6 +147,13 @@ unit = "Nos"
 name = "Motor Assembly 400mm"
 price = 1350
 type = "Both"
+
+# Bearing/shaft press-fit + assembly labour; light electricity. (material ~995)
+[BOM.charges]
+labour = 85
+machinery = 40
+electricity = 18
+other = 8
 
 [[BOM.RM]]
 qty = 1
@@ -154,6 +199,14 @@ unit = "Nos"
 name = "Table Fan 400mm"
 price = 2200
 type = "Sell"
+
+# Final assembly + testing labour, machinery, running test electricity, packaging
+# under "other". (material ~2315)
+[BOM.charges]
+labour = 120
+machinery = 55
+electricity = 30
+other = 40
 
 [[BOM.RM]]
 qty = 1
@@ -217,5 +270,14 @@ qty = 1
 unit = "Set"
 name = "Fastener Set"
 price = 30
+type = "Both"
+
+# Sheet-metal trims/rejects from guards & base at final assembly — sold as scrap.
+# Recovery = price/qty = 40/Kg.
+[[BOM.scrap]]
+qty = 0.2
+unit = "Kg"
+name = "Sheet Metal Scrap"
+price = 8
 type = "Both"
 ```
