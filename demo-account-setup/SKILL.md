@@ -382,17 +382,23 @@ Write the confirmed values into a single fenced ```toml block at `scripts/data.m
 `.py` files. Preserve the section comments from the template. The loader regex rejects anything
 other than a single fenced toml block.
 
+**If the skill directory is mounted read-only** (common in the sandbox — the `.py` files and their
+folder can't be written), first **copy the whole `scripts/` folder to a writable working dir** (e.g.
+under the sandbox's temp/home) and run everything from there, writing `data.md` into that copy. Do
+not try to edit files in place under a read-only mount — the write fails and stalls the run.
+
 ### Step 6 — Run the scripts (prerequisites serial, documents in parallel)
 
 The run splits into two phases. **Phase 1 (`000`–`003`) is strictly serial** — each step depends on
 the previous step's server-side state (account → counter-parties → units → inventory items), so it
 runs in numeric order and **halts on any failure**. **Phase 2 (`004`–`013`) runs concurrently** —
-these steps are mutually independent (none reads another's output; each builds its own documents from
-the inventory items `003` seeded and the counter-parties `001` created), so they fan out under a
-bounded worker pool instead of running one-at-a-time. **`004_create_bom.py` no longer needs to run
-"immediately after" 003** — it only needs 003 to have finished, which Phase 1 guarantees before Phase
-2 starts. The BOM is still not a dependency for any later step, so its outcome never affects the rest
-of Phase 2 (see **failure tiers** below).
+these steps don't read each other's output (each builds its own documents from the inventory items
+`003` seeded and the counter-parties `001` created), so they run in parallel **by lane** — grouped by
+document family, since same-family steps share a document-number series and must stay serial within
+their lane (see the lane table below). **`004_create_bom.py` no longer needs to run "immediately
+after" 003** — it only needs 003 to have finished, which Phase 1 guarantees before Phase 2 starts. The
+BOM is still not a dependency for any later step, so its outcome never affects the rest of Phase 2
+(see **failure tiers** below).
 
 **Phase 1 — prerequisites, strictly serial (halt on failure):**
 
@@ -407,63 +413,79 @@ done
 If any of `000`–`003` exits non-zero, **stop** — show the failing script's stderr/stdout tail and do
 not launch Phase 2. Nothing downstream can work without the shared prerequisite state.
 
-**Phase 2 — document steps, run them in parallel (each non-fatal):**
+**Phase 2 — document steps, run them in parallel BY LANE (each non-fatal):**
 
-`004`–`013` don't depend on each other, so run them **in parallel** instead of one-at-a-time — that's
-where the time saving is. **How** you parallelise is *your* call as the agent, matched to what the
-runtime gives you; the skill sets the goal and the guardrails, it does not hard-code a runner. The
-guardrails:
+The document steps don't read each other's *data*, but many **share a document-number series**, and
+that makes a naive "fan all ten out at once" unsafe. The three OCs (`005`/`006`/`007`) all draw from
+the `oc` series; the three POs (`008`/`009`/`010`) from the `po` series; the enquiry/quotation pair
+(`011`/`012`) from the SE/SQ series (and their child challans/invoices share per-type series too).
+**If two steps of the same family run concurrently they grab the same next number and the second one
+409s ("duplicate document number").** So parallelise **by lane**, not flat:
 
-- **Keep it bounded** — a handful in flight at once (≈4 is a sensible start), not all ten. This cap is
-  your **throttle guard**: the scripts do no rate-limit handling of their own, so limiting how many hit
-  the backend at once is what keeps you under the 429 ceiling.
-- **Each step is independent and non-fatal** — capture each one's output/exit separately so a failure
-  is logged and skipped, never aborting the others.
-- **Watch and adapt** — if throttling shows up, lower how many run at once (down to `1` = serial if
-  needed); re-run any throttled step **on its own afterwards**, never mid-batch (scripts aren't
-  idempotent).
-- **Collect results** — after they finish, gather each step's outcome (success, or the real error
-  behind a non-zero exit) for the Step 7 report.
+- run each document **family as its own serial lane** — one step at a time within the lane, so it
+  never collides with its siblings; but
+- run the **lanes in parallel** with each other — different families use different series, so they
+  overlap safely.
 
-A **shell worker-pool** (background jobs with a concurrency limit) is the portable way to do this —
-it works anywhere there's `bash` + `python3`. Below is *one illustrative* pool — adapt it freely, it
-is an example, not a mandated script:
+The lanes:
+
+| Lane  | Steps (run SERIALLY, in order)                              | Shared series                       |
+| ----- | ----------------------------------------------------------- | ----------------------------------- |
+| BOM   | `004`                                                       | — (standalone)                      |
+| OC    | `005` → `006` → `007`                                       | `oc` + sales challan / invoice      |
+| PO    | `008` → `009` → `010`                                       | `po` + inward / QIR / PRDC / invoice|
+| SE/SQ | `011` → `012`                                               | SE / SQ                             |
+| Logo  | `013`                                                       | — (standalone)                      |
+
+Five lanes run at once, so the run finishes in about the time of the **longest lane (~3 steps)** — not
+all ten serially — and with **no same-series collisions**. Each step stays **non-fatal**: a failure is
+logged and the rest of its lane (and the other lanes) carry on. Collect each step's outcome from its
+log for the Step 7 report.
+
+**Run the launcher with `bash`, not `sh`** — it uses `bash` features (`local`, background jobs,
+`wait`); under `sh` it misfires (a prior run mis-reported a clean `000` as failed for exactly this
+reason). This is *one illustrative* launcher — adapt freely, it is not a mandated script:
 
 ```bash
 cd scripts && mkdir -p logs
-MAXJOBS=4                     # tune down if you see throttling
-declare -A PID2STEP
-launch() {   # block until a worker frees up, then start the step in the background
-  while (( $(jobs -rp | wc -l) >= MAXJOBS )); do sleep 1; done
-  python3 "$1" > "logs/${1%.py}.log" 2>&1 &
-  PID2STEP[$!]="$1"
+run_lane() {   # $1 = lane label; $2.. = scripts to run SERIALLY within the lane
+  local lane="$1"; shift
+  for s in "$@"; do
+    if python3 "$s" > "logs/${s%.py}.log" 2>&1; then echo "OK   [$lane] $s"
+    else echo "SKIP [$lane] $s (see logs/${s%.py}.log)"; fi
+  done
 }
-for s in 004_create_bom.py 005_create_oc_first_buyer.py \
-         006_create_oc_second_buyer_with_challan_invoice.py \
-         007_create_oc_invoice_split_challans.py 008_create_po_inward_invoice.py \
-         009_create_po_inward_60pct_second_seller.py \
-         010_create_po_split_inwards_qirs_prdc_invoice.py \
-         011_create_three_sales_enquiries_with_sq.py \
-         012_create_three_sales_quotations_with_deal_status.py \
-         013_upload_company_logo.py; do
-  launch "$s"
-done
-for pid in "${!PID2STEP[@]}"; do
-  if wait "$pid"; then echo "OK   ${PID2STEP[$pid]}"
-  else echo "SKIP ${PID2STEP[$pid]} (exit $? — see logs/${PID2STEP[$pid]%.py}.log)"; fi
-done
+run_lane bom  004_create_bom.py &
+sleep 2   # small stagger spreads the per-script login burst across lanes
+run_lane oc   005_create_oc_first_buyer.py \
+              006_create_oc_second_buyer_with_challan_invoice.py \
+              007_create_oc_invoice_split_challans.py &
+sleep 2
+run_lane po   008_create_po_inward_invoice.py \
+              009_create_po_inward_60pct_second_seller.py \
+              010_create_po_split_inwards_qirs_prdc_invoice.py &
+sleep 2
+run_lane sq   011_create_three_sales_enquiries_with_sq.py \
+              012_create_three_sales_quotations_with_deal_status.py &
+sleep 2
+run_lane logo 013_upload_company_logo.py &
+wait
 ```
 
+If you still see 429s, launch **fewer lanes at a time** (e.g. BOM + OC + PO first, then SE/SQ + Logo)
+— never widen beyond the five lanes, and never break a lane into parallel same-family steps.
+
 `013_upload_company_logo.py` is a no-op when `LOGO_PATH` is empty in `data.md` — it logs that the
-upload was skipped and exits `0`, so it is safe to always include in the fan-out.
+upload was skipped and exits `0`, so it is safe to always include.
 
 **Throttle-safe pacing — YOU (the agent) manage this, not the scripts.** The scripts make raw API
 calls and do **no** rate-limit handling of their own; pacing and recovery are your job. In **Phase 1**
 leave a **few seconds between the serial steps** (≈3s is a fine default). In **Phase 2** the
-**concurrency cap is the pacing knob** — the 4-worker limit keeps the burst under the backend's
-per-minute ceiling. Use your judgment: if you start seeing throttling, **lower the cap** (`MAXJOBS=2`,
-even `1`) and/or add a short stagger between launches; if everything's flowing, 4 is fine. Do **not**
-raise the cap above 4 to go faster — that's the fastest way to trip throttling.
+**number of parallel lanes is the pacing knob** — five lanes (with the 2s launch stagger) keep the
+burst under the backend's per-minute ceiling. Use your judgment: if you start seeing throttling,
+**run fewer lanes at once** (down to one lane = fully serial) and lengthen the stagger; if everything's
+flowing, five is fine. Do **not** split a lane into parallel same-family steps to go faster — that
+both trips throttling and races the shared document-number series (409s).
 
 **Handling throttle / rate-limit errors — react intelligently.** The Tranzact backend rate-limits
 bursts of calls, usually surfacing as **HTTP 429** (or a body mentioning "throttled" / "rate limit" /
@@ -476,10 +498,12 @@ bursts of calls, usually surfacing as **HTTP 429** (or a body mentioning "thrott
   redo work; prefer to *avoid* throttling by pacing. If the same prerequisite throttles to failure
   twice in a row after waiting, stop and report — the backend may be degraded.
 - **In Phase 2** (parallel): a 429 shows up as one step's non-zero exit in its log. Treat it as one
-  more non-fatal skip (see below) — **don't re-run it inside the pool** (re-running a non-idempotent
-  step mid-fan-out risks duplicate documents). Instead, if throttling appears, **lower `MAXJOBS` and
-  let the pool finish**, then optionally re-run any throttled step **alone** afterwards. If throttling
-  is pervasive, drop the cap to `1` (effectively serial) for the rest of the run.
+  more non-fatal skip (see below) — **don't re-run it inside the lanes** (re-running a non-idempotent
+  step while its lane-mates are mid-flight risks duplicate documents). Instead, if throttling appears,
+  **run fewer lanes and let them finish**, then re-run any throttled step **alone** afterwards. If
+  throttling is pervasive, drop to one lane at a time (fully serial) for the rest of the run. Before
+  re-running a step that got *partway* (e.g. a PO created but its closing invoice 429'd), check what it
+  already created and only fill the gap — a blind re-run duplicates the whole chain.
 
 (Rationale: this is a skill — keep the scripts as lean, deterministic automations and let the agent
 handle situational things like rate-limiting with judgment, rather than hard-coding retry logic.)
@@ -490,11 +514,12 @@ non-fatal.** The run splits cleanly along the two phases:
 - **Phase 1 (`000`–`003`) is a hard prerequisite chain** (account → counter-parties → units →
   inventory items). Every later step reads this shared state, so if any of `000`–`003` fails, **halt**
   — show the failing script's stderr/stdout tail and stop. Nothing downstream can work without them.
-- **Phase 2 (`004`–`013`) steps are mutually independent.** Each one builds its own documents (BOM,
+- **Phase 2 (`004`–`013`) steps are data-independent.** Each one builds its own documents (BOM,
   OCs, POs, Inwards, Invoices, QIRs, SEs, SQs, logo) from the shared items (`003`) and counter-parties
   (`001`) — **none of them reads another's output** (verified live: OC, PO, Inward, Invoice and SQ all
   create fine on an account where the BOM/QIR/SE steps never ran). So a failure in one **must not**
-  affect the others, and running them concurrently is safe.
+  affect the others. They are safe to run concurrently **across lanes** — the one coupling is the
+  shared document-number series *within* a family, which the lane grouping serialises (see Phase 2).
 
 Therefore, **whenever any Phase 2 step exits non-zero for any reason** (examples: **HTTP 426
 `PremiumFeatureException`** — a premium feature is off, keys `bom`/`grn-qir`/`ncd` for
@@ -574,11 +599,11 @@ backend error worth reporting.
 5. **Always confirm the full seed-value summary before execution.** Print every value about to be
    written to `data.md`, mark user-supplied vs. default, and wait for explicit go-ahead.
 6. **Phase 1 (`000`–`003`) runs strictly in numeric order, never in parallel** — each step assumes
-   the prior step's server-side state. **Phase 2 (`004`–`013`) runs in parallel, bounded** — these
-   steps are mutually independent and read only the shared state from `001`/`003`, never each other's
-   output. Keep only a handful running at once (≈4) as a throttle guard, and use your judgment (see
-   Step 6) — the skill sets the goal, not a fixed runner. Never reorder Phase 1, and never promote a
-   Phase 2 step ahead of Phase 1.
+   the prior step's server-side state. **Phase 2 (`004`–`013`) runs in parallel BY LANE** — group the
+   steps by document family (BOM / OC / PO / SE-SQ / Logo), run each family serially within its lane,
+   and run the lanes concurrently (see Step 6). Same-family steps **must never run at once** — they
+   share a document-number series and collide (409 duplicate number). Run the launcher with `bash`,
+   not `sh`. Never reorder Phase 1, never promote a Phase 2 step ahead of Phase 1.
 7. **Never reuse an email.** Signup fails on duplicates. Always confirm with the teammate.
 8. **Never ask the teammate to run code or install anything locally.** All execution happens inside
    the sandbox. Their job is to chat.
