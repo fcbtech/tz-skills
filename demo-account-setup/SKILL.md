@@ -382,11 +382,6 @@ Write the confirmed values into a single fenced ```toml block at `scripts/data.m
 `.py` files. Preserve the section comments from the template. The loader regex rejects anything
 other than a single fenced toml block.
 
-**If the skill directory is mounted read-only** (common in the sandbox — the `.py` files and their
-folder can't be written), first **copy the whole `scripts/` folder to a writable working dir** (e.g.
-under the sandbox's temp/home) and run everything from there, writing `data.md` into that copy. Do
-not try to edit files in place under a read-only mount — the write fails and stalls the run.
-
 ### Step 6 — Run the scripts (prerequisites serial, documents in parallel)
 
 The run splits into two phases. **Phase 1 (`000`–`003`) is strictly serial** — each step depends on
