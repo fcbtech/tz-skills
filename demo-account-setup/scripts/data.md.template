@@ -102,6 +102,9 @@ unit = "Nos"
 name = "Stator 400mm"
 price = 480
 type = "Both"
+hsn = "8503"                 # OPTIONAL per row: HSN/SAC code, agent-derived to suit the item.
+# opening_stock = 2000       # OPTIONAL per row: starting Current Stock; omit -> a positive
+                             #   default is seeded so the sales steps don't go negative.
 
 # Winding is manual + a winding machine; small electricity draw. (material ~459)
 [BOM.charges]
@@ -116,6 +119,7 @@ unit = "Kg"
 name = "Copper Winding Wire"
 price = 315
 type = "Both"
+hsn = "7408"                 # OPTIONAL: HSN also applies to RM / scrap rows.
 
 [[BOM.RM]]
 qty = 1
