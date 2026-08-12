@@ -146,6 +146,36 @@ def signup(email: str, password: str) -> dict:
     return data
 
 
+def refresh_company_scoped_token(email: str, password: str) -> None:
+    """Re-login via password-login to get a COMPANY-SCOPED access token.
+
+    The signup token was issued before the company existed, so it isn't scoped to
+    it. The v3 settings service resolves the company against the caller's token —
+    so posting the Phase-3 masters (billing / delivery / bank) with the signup
+    token 404s ("Target company … not found") even though the company UUID is
+    correct (the value is read straight from /profile/info/fetch/). Every other
+    script (001+) authenticates with password-login AFTER the company exists and
+    hits the same /api/v3/settings/* routes fine — do the same here before Phase 3.
+    (POST /main/login/password-login/ — the same call 002 uses.)
+    """
+    url = f"{BASE_URL}/main/login/password-login/"
+    log.info(">>> POST /main/login/password-login/ (refresh company-scoped token)")
+    response = requests.post(url, json={"email": email, "password": password},
+                             headers=_headers(authed=False), timeout=TIMEOUT)
+    log.info("<<< POST /main/login/password-login/ -> %d", response.status_code)
+    if response.status_code >= 400:
+        sys.exit(f"Re-login (password-login) failed (HTTP {response.status_code}): {response.text[:300]}")
+    data = (response.json() or {}).get("data") or {}
+    token = data.get("access_token") or data.get("access")
+    if not token:
+        sys.exit(f"Re-login response missing access token. Keys: {list(data.keys())}")
+    SESSION.access_token = token
+    refresh = data.get("refresh_token") or data.get("refresh")
+    if refresh:
+        SESSION.refresh_token = refresh
+    log.info("Company-scoped token acquired; using it for the Phase 3 v3 masters.")
+
+
 # --- Phase 2: Onboarding ----------------------------------------------------
 
 
@@ -259,6 +289,10 @@ def main() -> None:
         sys.exit(f"User first_name mismatch: server={user.get('first_name')!r} expected={DATA['FIRST_NAME']!r}")
 
     log.info("=== Phase 3: Masters (billing / delivery / bank) ===")
+    # The signup token isn't scoped to the just-created company, and the v3 settings
+    # service resolves the company against the token — so the masters below 404 with
+    # it. Re-login first so these calls carry a company-scoped token.
+    refresh_company_scoped_token(email, password)
     # v3 settings endpoints expect the company UUID (data.company.uuid), NOT the
     # integer PK (data.company.id) or the JWT company_id claim — both of which are
     # ints and trigger a 422 "UUID input should be a string..." on these routes.
