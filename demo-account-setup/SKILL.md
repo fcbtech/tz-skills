@@ -41,7 +41,9 @@ After a successful run the demo account will have:
    multi-level one seeds more) — but is **hard-capped at 50 unique items**, a server-load ceiling
    `003` enforces (it aborts before creating anything if the tree exceeds 50). The top finished good
    is typed `"Sell"`; sub-assemblies and bought leaves are `"Both"`, so there are always ample
-   sell-capable and buy-capable items for the downstream document steps.
+   sell-capable and buy-capable items for the downstream document steps. Each item carries its
+   **HSN code** (from the BOM's `hsn`) and a positive **opening stock**, so invoices show HSNs and
+   inventory doesn't start negative.
 5. Three Order Confirmation flows (sales side). Each script picks its line items **at random**
    from the full sellable-goods catalog (no fixed offset), so the exact products vary per run
    while the catalog is exercised broadly across repeated runs. A little overlap between
@@ -284,6 +286,19 @@ how much of that item this recipe consumes/produces; `price` is the value of tha
 Sheets, …). The 003 script creates one inventory item per unique name at the per-unit price and
 auto-attaches the company's default GST — **do not** put a tax field in the BOM (003 fails fast if
 the account has no GST master).
+
+**HSN codes (per item).** Give every BOM row an **`hsn`** — a realistic HSN/SAC code appropriate to
+that item, derived like the rest of the seed (e.g. a decorative glass mirror ≈ `7009`, float glass ≈
+`7005`, an MDF moulding ≈ `4411`, a copper wire ≈ `7408`). It flows into the item master and then onto
+every invoice/OC/PO, so a demo without HSNs looks half-set-up. `hsn` is optional in the schema (blank
+is accepted), but **author one for each item** unless the teammate says otherwise. It goes on `[BOM.FG]`,
+`[[BOM.RM]]` and `[[BOM.scrap]]` rows alike; reused item names take the first occurrence's HSN.
+
+**Opening stock (avoids negative inventory).** 003 seeds every item with a positive **Current Stock**
+so the sales steps (which dispatch stock on invoice/challan) don't drive inventory negative — a common
+"why is everything in the red" complaint on fresh demo accounts. A sensible default is applied
+automatically; you normally don't set anything. To tune a specific item, add **`opening_stock`** (a
+non-negative number) to its BOM row.
 
 **Realistic costing (optional, per BOM) — charges + scrap.** A real finished good doesn't cost just
 its raw materials; it costs **rolled-up material + labour/machinery/electricity/other charges −
