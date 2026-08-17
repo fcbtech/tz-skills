@@ -332,12 +332,14 @@ def _rehydrate_item(ds_item: dict, tax_master: dict, products_by_id: dict) -> di
 
 def _extract_doc_id(create_resp: dict) -> int:
     data = create_resp.get("data") or {}
+    def _valid(v):  # accept int PKs AND UUIDv7 string ids; reject None/""/0
+        return (isinstance(v, int) and v > 0) or (isinstance(v, str) and v.strip() != "")
     for k in ("doc_id", "id", "document_id"):
-        if isinstance(data.get(k), int):
+        if _valid(data.get(k)):
             return data[k]
     doc = data.get("document") or {}
     for k in ("doc_id", "id"):
-        if isinstance(doc.get(k), int):
+        if _valid(doc.get(k)):
             return doc[k]
     raise RuntimeError(f"Could not extract doc_id from create response keys: {list(data.keys())}")
 
@@ -802,7 +804,7 @@ def main() -> None:
     log.info("Phase 1: creating PO for supplier %s (%s)", ctx["supplier_id"], ctx["supplier_name"])
     po_resp = create_po(token, ctx, qty_by_product)
     po_id = _extract_doc_id(po_resp)
-    log.info("PO created — doc_id=%d", po_id)
+    log.info("PO created — doc_id=%s", po_id)
 
     po_view = _get(
         token, "/documents/document/view/", params={"doc_type": PO_DOC_TYPE_INT, "doc_id": po_id}
@@ -811,15 +813,15 @@ def main() -> None:
     log.info("Phase 2: creating Inward for 100%% of PO quantity")
     inward_resp = create_inward(token, ctx, po_view, qty_by_product)
     inward_id = _extract_doc_id(inward_resp)
-    log.info("Inward created — doc_id=%d", inward_id)
+    log.info("Inward created — doc_id=%s", inward_id)
 
     log.info("Phase 3: creating Purchase Invoice against PO")
     invoice_resp = create_invoice(token, ctx, po_view)
     invoice_id = _extract_doc_id(invoice_resp)
-    log.info("Invoice created — doc_id=%d", invoice_id)
+    log.info("Invoice created — doc_id=%s", invoice_id)
 
     log.info(
-        "Done. PO=%d  Inward=%d  Invoice=%d  (transaction=%d)",
+        "Done. PO=%s  Inward=%s  Invoice=%s  (transaction=%s)",
         po_id,
         inward_id,
         invoice_id,

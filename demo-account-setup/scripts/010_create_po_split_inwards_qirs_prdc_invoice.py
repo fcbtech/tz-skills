@@ -344,12 +344,14 @@ def _rehydrate_item(ds_item: dict, tax_master: dict, products_by_id: dict) -> di
 
 def _extract_doc_id(create_resp: dict) -> int:
     data = create_resp.get("data") or {}
+    def _valid(v):  # accept int PKs AND UUIDv7 string ids; reject None/""/0
+        return (isinstance(v, int) and v > 0) or (isinstance(v, str) and v.strip() != "")
     for k in ("doc_id", "id", "document_id"):
-        if isinstance(data.get(k), int):
+        if _valid(data.get(k)):
             return data[k]
     doc = data.get("document") or {}
     for k in ("doc_id", "id"):
-        if isinstance(doc.get(k), int):
+        if _valid(doc.get(k)):
             return doc[k]
     raise RuntimeError(f"Could not extract doc_id from create response: {list(data.keys())}")
 
@@ -1083,7 +1085,7 @@ def main() -> None:
     po_id = _extract_doc_id(create_po(token, ctx, po_qty))
     po_view = _fetch_view(token, PO_DOC_TYPE_INT, po_id)
     transaction_id = po_view["data"]["document_data"]["transaction"]["id"]
-    log.info("PO doc_id=%d, transaction=%d", po_id, transaction_id)
+    log.info("PO doc_id=%s, transaction=%s", po_id, transaction_id)
 
     log.info("Phase 2: Inward #1 (%d units)", inward1_qty)
     inward1_id = _extract_doc_id(create_inward(token, ctx, po_view, inward1_qty))
@@ -1104,7 +1106,7 @@ def main() -> None:
     invoice_id = _extract_doc_id(create_invoice(token, ctx, po_view))
 
     log.info(
-        "Done. PO=%d Inward1=%d QIR1=%d Inward2=%d QIR2=%d PRDC=%d Invoice=%d (transaction=%d)",
+        "Done. PO=%s Inward1=%s QIR1=%s Inward2=%s QIR2=%s PRDC=%s Invoice=%s (transaction=%s)",
         po_id, inward1_id, qir1_id, inward2_id, qir2_id, prdc_id, invoice_id, transaction_id,
     )
 

@@ -226,7 +226,7 @@ def _transform_unit(unit_value: Any, units_pool: list) -> dict:
 def _transform_units(units_value: Any, units_pool: list) -> list:
     if isinstance(units_value, list):
         return units_value
-    if isinstance(units_value, int):
+    if isinstance(units_value, (int, str)):   # unit id may be an int PK or a UUIDv7 string
         for u in units_pool:
             if u.get("id") == units_value:
                 return [u]
