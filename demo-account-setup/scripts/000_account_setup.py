@@ -125,6 +125,40 @@ def call(method: str, path: str, payload: dict | None = None, authed: bool = Tru
         return {"status_code": response.status_code, "text": response.text}
 
 
+def _try_post(path: str, payload: dict) -> tuple[int, str]:
+    """POST without exiting on error — returns (status_code, body). Used where the
+    caller wants to retry (e.g. the company-identifier fallback below)."""
+    url = f"{BASE_URL}{path}"
+    log.info(">>> POST %s", path)
+    r = requests.post(url, json=payload, headers=_headers(True), timeout=TIMEOUT)
+    log.info("<<< POST %s -> %d", path, r.status_code)
+    return r.status_code, r.text
+
+
+def _post_address_master(path: str, name: str, company: dict) -> None:
+    """POST a v3 address master, resilient to WHICH company identifier the backend
+    wants. Historically these routes required the company **uuid** (integer id →
+    422 "UUID input should be a string"); on current prod they **404 on the uuid**
+    and accept the integer company **id** instead — the accepted identifier flipped
+    between releases. So try each identifier in turn until one is accepted."""
+    candidates = []
+    for key in ("uuid", "id"):
+        v = company.get(key)
+        if v is not None and v not in candidates:
+            candidates.append(v)
+    if not candidates:
+        sys.exit("Could not resolve any company identifier (uuid/id) from /profile/info/fetch/.")
+    last = ""
+    for cand in candidates:
+        status, body = _try_post(path, _address_payload(name, cand))
+        if status < 400:
+            log.info("    %s accepted company identifier %r", path, cand)
+            return
+        last = f"HTTP {status}: {body[:200]}"
+        log.info("    %s rejected identifier %r (%s) — trying next", path, cand, last)
+    sys.exit(f"POST {path} failed for every company identifier {candidates}: {last}")
+
+
 # --- Phase 1: Signup --------------------------------------------------------
 
 
@@ -289,21 +323,14 @@ def main() -> None:
         sys.exit(f"User first_name mismatch: server={user.get('first_name')!r} expected={DATA['FIRST_NAME']!r}")
 
     log.info("=== Phase 3: Masters (billing / delivery / bank) ===")
-    # The signup token isn't scoped to the just-created company, and the v3 settings
-    # service resolves the company against the token — so the masters below 404 with
-    # it. Re-login first so these calls carry a company-scoped token.
+    # Cheap safety step: re-login so these calls carry a company-scoped token (the
+    # signup token predates the company). The MAIN fix, though, is the company
+    # identifier: these v3 routes flip-flopped between wanting the uuid and the
+    # integer id across releases, so `_post_address_master` tries each until one is
+    # accepted (prod currently 404s on the uuid and accepts the id).
     refresh_company_scoped_token(email, password)
-    # v3 settings endpoints expect the company UUID (data.company.uuid), NOT the
-    # integer PK (data.company.id) or the JWT company_id claim — both of which are
-    # ints and trigger a 422 "UUID input should be a string..." on these routes.
-    company_id = company.get("uuid")
-    if not company_id:
-        sys.exit(
-            "Could not resolve company UUID from /profile/info/fetch/ (data.company.uuid); v3 settings masters require it."
-        )
-    log.info("Resolved company UUID=%s for v3 settings masters", company_id)
-    call("POST", "/api/v3/settings/billing-addresses/", payload=_address_payload(ADDRESS_NAME, company_id))
-    call("POST", "/api/v3/settings/delivery-locations/", payload=_address_payload(ADDRESS_NAME, company_id))
+    _post_address_master("/api/v3/settings/billing-addresses/", ADDRESS_NAME, company)
+    _post_address_master("/api/v3/settings/delivery-locations/", ADDRESS_NAME, company)
     create_bank_account()
 
     log.info("=== Account Credentials ===")
