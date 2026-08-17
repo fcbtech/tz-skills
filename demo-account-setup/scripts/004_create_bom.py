@@ -180,8 +180,11 @@ def _post_bom_create(token: str, payload: dict) -> tuple[bool, int, dict | None,
         data = r.json()
     except ValueError:
         return False, r.status_code, None, r.text[:1000]
-    ok = data.get("status") == 1 and isinstance((data.get("data") or {}).get("id"), int) \
-        and (data.get("data") or {}).get("id", 0) > 0
+    # Accept any truthy id — the backend now returns UUIDv7 strings for primary
+    # keys (not just ints); requiring an int here made a SUCCESSFUL create look
+    # failed, which would trigger the store-cycling retry and create duplicates.
+    new_id = (data.get("data") or {}).get("id")
+    ok = data.get("status") == 1 and bool(new_id) and str(new_id).strip() not in ("", "0")
     return ok, r.status_code, data, "" if ok else str(data)[:1000]
 
 
@@ -222,15 +225,15 @@ def fetch_all_stores(token: str) -> list[dict[str, Any]]:
     return _get(token, "/settings/my-settings/", params={"model": "all_stores"})["data"]
 
 
-def first_non_reject_store(stores: list[dict[str, Any]]) -> int:
+def first_non_reject_store(stores: list[dict[str, Any]]) -> Any:
     for store in stores:
         if store.get("is_reject") == 0:
-            return int(store["id"])
+            return store["id"]                 # id as-is (int or UUIDv7 string)
     raise RuntimeError("No non-reject store found in this account.")
 
 
 def resolve_wip_store(base_data: dict[str, Any], stores: list[dict[str, Any]],
-                      fallback_store_id: int) -> tuple[int, str]:
+                      fallback_store_id: Any) -> tuple[Any, str]:
     """Resolve the WIP store the BOM header requires.
 
     The web flow always sends ``doc_wip_store`` in primary_document_details;
@@ -253,15 +256,15 @@ def resolve_wip_store(base_data: dict[str, Any], stores: list[dict[str, Any]],
             default_wip = _pdd["doc_wip_store"]
             break
     if default_wip:
-        return int(default_wip), "base-data default"
+        return default_wip, "base-data default"
     for s in stores:
         blob = " ".join(
             str(s.get(k, "")).lower()
             for k in ("store_type", "type", "name", "store_name", "store_category")
         )
         if "wip" in blob or "work in progress" in blob or "work-in-progress" in blob:
-            return int(s["id"]), "store-list WIP match"
-    return int(fallback_store_id), "fallback (reused main store)"
+            return s["id"], "store-list WIP match"
+    return fallback_store_id, "fallback (reused main store)"
 
 
 def fetch_number_series(token: str, store_id: int) -> list[dict[str, Any]]:
@@ -363,13 +366,13 @@ def count_flattened_rm_rows(token: str, child_bom_id: int) -> int:
     Recurse through each sub-assembly (any rm_item carrying a ``child_bom_id``) to
     get the true flattened total the view will report.
     """
-    items = fetch_bom_items(token, int(child_bom_id))
+    items = fetch_bom_items(token, child_bom_id)
     total = 0
     for it in (items.get("rm_items") or []):
         total += 1
         grand_bom_id = it.get("child_bom_id") or 0
         if grand_bom_id:
-            total += count_flattened_rm_rows(token, int(grand_bom_id))
+            total += count_flattened_rm_rows(token, grand_bom_id)
     return total
 
 
@@ -520,14 +523,14 @@ def attach_child_bom(token: str, rm_row: dict[str, Any], item_id: int, unit_id: 
             "Ensure the child BOM is published before this one (list it earlier in data.md)."
         )
 
-    items = fetch_bom_items(token, int(child["id"]))
+    items = fetch_bom_items(token, child["id"])
     rm_items = items.get("rm_items") or []
     rm_row["child_rm"] = [
         build_child_rm_row(it, parent_quantity, f"{parent_index}.{i + 1}",
                            palette[i % len(palette)])
         for i, it in enumerate(rm_items)
     ]
-    rm_row["child_bom_id"] = int(child["id"])
+    rm_row["child_bom_id"] = child["id"]
     rm_row["bom_item_id"] = (
         child.get("bom_item_id")
         or (items.get("fg_items") or {}).get("bom_item_id")
@@ -693,13 +696,13 @@ def main() -> None:
             if child_selector:
                 log.info("  RM %r requests a child BOM (selector=%r).",
                          spec["name"], child_selector)
-                attach_child_bom(token, rm_row, int(product["id"]), int(unit["id"]),
+                attach_child_bom(token, rm_row, product["id"], unit["id"],
                                  rm_quantity, idx + 1, palette, child_selector)
-                linked_rm_item_ids.append(int(product["id"]))
+                linked_rm_item_ids.append(product["id"])
                 # The view flattens the child's ENTIRE sub-tree (grandchildren and
                 # deeper) into top-level rows, so count it recursively — not just the
                 # immediate child_rm rows, which would under-count at 3+ levels.
-                expected_view_rows += count_flattened_rm_rows(token, int(rm_row["child_bom_id"]))
+                expected_view_rows += count_flattened_rm_rows(token, rm_row["child_bom_id"])
 
             rm_rows.append(rm_row)
 
@@ -723,7 +726,7 @@ def main() -> None:
         # this env, cycle through the other non-reject stores as doc_wip_store
         # before giving up. On total failure, dump the exact payload + server
         # response so the real cause is pinpointed in one run, not guessed.
-        non_reject_ids = [int(s["id"]) for s in stores if s.get("is_reject") == 0]
+        non_reject_ids = [s["id"] for s in stores if s.get("is_reject") == 0]
         wip_candidates = [wip_store_id] + [sid for sid in non_reject_ids if sid != wip_store_id]
         create_resp = None
         payload = None
@@ -760,11 +763,11 @@ def main() -> None:
         if create_resp.get("status") != 1:
             raise RuntimeError(f"BOM create did not return status=1; response: {create_resp}")
         bom_id = (create_resp.get("data") or {}).get("id")
-        if not isinstance(bom_id, int) or bom_id <= 0:
-            raise RuntimeError(f"BOM create did not return a positive integer id; response: {create_resp}")
+        if not bom_id or str(bom_id).strip() in ("", "0"):
+            raise RuntimeError(f"BOM create did not return a usable id; response: {create_resp}")
         log.info("BOM created: id=%s", bom_id)
 
-        view = fetch_bom_view(token, int(bom_id))
+        view = fetch_bom_view(token, bom_id)
         persisted_name = (view.get("primary_document_details") or {}).get("doc_name")
         if persisted_name != bom_name:
             raise RuntimeError(
@@ -819,7 +822,7 @@ def main() -> None:
                 raise RuntimeError(
                     f"BOM view returned {len(view_scrap)} scrap row(s); expected {len(scrap_rows)}."
                 )
-        created_bom_ids.append(int(bom_id))
+        created_bom_ids.append(bom_id)
 
     log.info("Done. Created %d BOM(s): %s", len(created_bom_ids), created_bom_ids)
 
