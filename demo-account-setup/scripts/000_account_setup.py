@@ -62,6 +62,10 @@ SECTOR = "Manufacturing"
 IS_MANUFACTURING = "Yes"
 CREATE_EINVOICE = "Yes"
 POC_DESIGNATION = "Owner / Director"
+# Marks every account this skill creates as a demo/sandbox company, so demos can be
+# identified/filtered later. Sent inside company_meta_data (a "Yes"/"No" string, matching
+# its siblings). This skill ONLY creates demo accounts, so it is always "Yes".
+IS_DEMO = "Yes"
 USER_DESIGNATION = "Owner / Director"
 MOBILE_CONSENT = False
 ADDRESS_NAME = "Office"
@@ -166,6 +170,7 @@ def update_company_profile() -> dict:
                 "is_manufacturing": IS_MANUFACTURING,
                 "create_einvoice": CREATE_EINVOICE,
                 "poc_designation": POC_DESIGNATION,
+                "is_demo": IS_DEMO,          # flag this as a demo/sandbox company
             },
         },
     )
@@ -257,6 +262,25 @@ def main() -> None:
         sys.exit(f"Company name mismatch: server={company.get('name')!r} expected={DATA['COMPANY_NAME']!r}")
     if user.get("first_name") != DATA["FIRST_NAME"]:
         sys.exit(f"User first_name mismatch: server={user.get('first_name')!r} expected={DATA['FIRST_NAME']!r}")
+
+    # Verify the demo flag actually persisted. company_meta_data may be a free-form
+    # blob (key survives) or a validated object (unknown keys silently dropped) — we
+    # can't know without reading it back. NON-FATAL: warn loudly if it didn't stick
+    # (so the backend can whitelist the key) rather than failing demo creation.
+    meta = company.get("company_meta_data")
+    if isinstance(meta, dict):
+        if meta.get("is_demo") == IS_DEMO:
+            log.info("Demo flag persisted: company_meta_data.is_demo=%r", meta.get("is_demo"))
+        else:
+            log.warning(
+                "⚠️  Demo flag NOT persisted — company_meta_data.is_demo came back %r "
+                "(expected %r). The backend is likely dropping the unknown key; ask them to "
+                "whitelist `is_demo` in company_meta_data (and make it filterable).",
+                meta.get("is_demo"), IS_DEMO,
+            )
+    else:
+        log.info("Could not verify demo flag — /profile/info/fetch/ did not return "
+                 "company_meta_data; confirm persistence separately.")
 
     log.info("=== Phase 3: Masters (billing / delivery / bank) ===")
     # v3 settings endpoints expect the company UUID (data.company.uuid), NOT the
