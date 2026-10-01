@@ -48,7 +48,7 @@ For a repo-wide check, validate every directory that contains a `SKILL.md`.
 
 ## Installing One Skill
 
-Each top-level folder with a `SKILL.md` is an installable skill. For example, `freshdesk/`, `outline/`, `newrelic/`, and `keka/` can be installed independently.
+Each top-level folder with a `SKILL.md` is an installable skill. For example, `freshdesk/`, `outline/`, `newrelic/`, `keka/`, and `tz-cli/` can be installed independently.
 
 First clone the repository:
 
@@ -199,6 +199,24 @@ The public Keka API docs are at:
 https://apidocs.keka.com/
 https://developers.keka.com/docs/getting-started-with-keka-apis
 ```
+
+## tz CLI Skill Setup
+
+The `tz-cli/` skill teaches agents to operate staging with the `tz` CLI (tranzact-cli): Fargate stacks, logs, stack
+databases, `tz local`, and the legacy EC2/RDS commands, including which commands are destructive and the traps
+around frontend branches, seeding and `~/.tz/config`.
+
+It stores no credentials. It needs a working `tz` on the machine (see the tranzact-cli README: install from the
+private PyPI, then `tz setup`). Install it for every agent at once by keeping one copy and symlinking it:
+
+```sh
+mkdir -p ~/.agents/skills ~/.claude/skills ~/.codex/skills
+cp -R tz-cli ~/.agents/skills/tz-cli
+ln -sfn ~/.agents/skills/tz-cli ~/.claude/skills/tz-cli
+ln -sfn ~/.agents/skills/tz-cli ~/.codex/skills/tz-cli
+```
+
+Add `~/.cursor/skills` the same way if you use Cursor.
 
 ## Agent Instructions
 
