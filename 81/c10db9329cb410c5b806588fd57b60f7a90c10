@@ -1,0 +1,29 @@
+tz-cli/references/commands.md
+  s_84d620ddb08b79::t_e632338bbdc1bd 1-111
+tz-cli/SKILL.md
+  s_84d620ddb08b79::t_e632338bbdc1bd 1-90
+tz-cli/references/local.md
+  s_84d620ddb08b79::t_e632338bbdc1bd 1-50
+tz-cli/references/troubleshooting.md
+  s_84d620ddb08b79::t_e632338bbdc1bd 1-86
+tz-cli/references/internals.md
+  s_84d620ddb08b79::t_e632338bbdc1bd 1-58
+README.md
+  s_84d620ddb08b79::t_6f261aa8b96572 51,203-220
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "81c10db9329cb410c5b806588fd57b60f7a90c10",
+  "prompts": {},
+  "sessions": {
+    "s_84d620ddb08b79": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c0ae222b-3ae9-4302-aaa1-335fbf674755",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "pratik-dev-25 <pratik.m@letstranzact.com>"
+    }
+  }
+}
