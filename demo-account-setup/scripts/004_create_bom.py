@@ -581,12 +581,106 @@ def build_scrap_row(product: dict[str, Any], unit: dict[str, Any], quantity: flo
     return row
 
 
+# --- Routing (machine planning) ---------------------------------------------
+
+
+def fetch_routing_ops(token: str) -> dict[str, dict[str, Any]]:
+    """Return {routing_number: op_record} for every routing operation on the account.
+
+    Routing ops (and their workstation/operator assignments) are seeded by
+    017_seed_routing_masters.py; here we only read them to attach to BOM rows.
+    """
+    res = _get(token, "/api/v3/production/routings/")
+    data = res.get("data")
+    if isinstance(data, dict):
+        data = data.get("data") or data.get("results") or []
+    return {r["number"]: r for r in (data or []) if r.get("number")}
+
+
+def _routing_entry(op: dict[str, Any]) -> dict[str, Any]:
+    """One routing_list entry for a BOM row, in the exact shape /production/bom/create/
+    expects. The machine/operator is copied from the routing-op master (an op may carry
+    a workstation group, workstation and/or operator); ``_pk`` and process-variant fields
+    stay null, matching the webapp's own create payload."""
+    return {
+        "routing_id": op["id"],
+        "routing_name": op.get("name", ""),
+        "routing_number": op.get("number", ""),
+        "comment": "",
+        "input_product_process_variant_id": None,
+        "input_product_process_variant_pk": None,
+        "input_variant_name": "",
+        "output_product_process_variant_id": None,
+        "output_product_process_variant_pk": None,
+        "output_variant_name": "",
+        "estimated_time_per_unit_seconds": None,
+        "require_prev_routing_done": None,
+        "workstation_group_id": op.get("workstation_group_id"),
+        "workstation_group_pk": None,
+        "workstation_group_name": op.get("workstation_group_name", ""),
+        "workstation_id": op.get("workstation_id"),
+        "workstation_pk": None,
+        "workstation_name": op.get("workstation_name", ""),
+        "operator_id": op.get("operator_id"),
+        "operator_pk": None,
+        "operator_name": op.get("operator_name", ""),
+    }
+
+
+def build_routing_list(op_numbers: Any, routing_ops: dict[str, dict[str, Any]],
+                       loc: str) -> list[dict[str, Any]]:
+    """Turn an ordered list of routing-op numbers (from data.md) into routing_list entries."""
+    if not isinstance(op_numbers, list):
+        sys.exit(f"{loc}.routing must be a list of routing-op numbers, got {op_numbers!r}")
+    out: list[dict[str, Any]] = []
+    for num in op_numbers:
+        op = routing_ops.get(str(num))
+        if op is None:
+            sys.exit(
+                f"{loc}.routing references routing op {num!r}, which doesn't exist on the "
+                f"account. Declare it under [[ROUTING_OP]] in data.md so 017 seeds it first."
+            )
+        out.append(_routing_entry(op))
+    return out
+
+
+def build_routing_aggregate(fg_row: dict[str, Any],
+                            rm_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Build the ``data.routing`` aggregate from rows that carry a routing_list.
+
+    The create payload lists routing both inline on each row AND aggregated here; we
+    mirror that. ``bom_item_id`` is empty on create (the row's item_id provides the
+    linkage) — the server assigns it and the view reflects it afterwards.
+    """
+    agg: dict[str, Any] = {"routing_finished_goods": [], "routing_raw_materials": []}
+    if fg_row.get("routing_list"):
+        agg["routing_finished_goods"].append({
+            "item_id": fg_row["item_id"],
+            "bom_item_id": fg_row.get("bom_item_id", ""),
+            "itemid": fg_row["itemid"],
+            "product_name": fg_row["product_name"],
+            "routing_list": fg_row["routing_list"],
+        })
+    for rm_row in rm_rows:
+        if rm_row.get("routing_list"):
+            agg["routing_raw_materials"].append({
+                "item_id": rm_row["item_id"],
+                "bom_item_id": rm_row.get("bom_item_id", ""),
+                "itemid": rm_row["itemid"],
+                "product_name": rm_row["product_name"],
+                "index": rm_row.get("index"),
+                "routing_list": rm_row["routing_list"],
+            })
+    return agg
+
+
 def build_create_payload(base_data: dict[str, Any], store_id: int, wip_store_id: int,
                          series_list: list[dict[str, Any]],
                          fg_row: dict[str, Any], rm_rows: list[dict[str, Any]],
                          bom_name: str,
                          other_charges: dict[str, Any] | None = None,
-                         scrap_rows: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+                         scrap_rows: list[dict[str, Any]] | None = None,
+                         routing: dict[str, Any] | None = None) -> dict[str, Any]:
     scrap_rows = scrap_rows or []
     if other_charges is None:
         other_charges = build_other_charges(None)
@@ -619,7 +713,7 @@ def build_create_payload(base_data: dict[str, Any], store_id: int, wip_store_id:
             "attachments": {"existing_attachments": []},
             "finished_goods": [fg_row],
             "raw_materials": rm_rows,
-            "routing": {},
+            "routing": routing or {},
             "routing_change_history": [],
             "scrap": scrap_rows,
             "other_charges": other_charges,
@@ -664,6 +758,7 @@ def main() -> None:
         raise RuntimeError(f"No BOM number series available for store_id={store_id}.")
 
     prefetch_products(token)  # one product-list call up front; per-row lookups hit the cache
+    routing_ops = fetch_routing_ops(token)  # routing-op masters (seeded by 017), keyed by number
 
     palette = ["#A3D5FD", "#FFC09F", "#B5EAD7", "#F6C6EA", "#FFE6A7"]
     created_bom_ids: list[int] = []
@@ -678,6 +773,9 @@ def main() -> None:
         fg_product = find_product_by_name(token, fg_spec["name"])
         fg_unit = pick_unit(fg_product, fg_spec["unit"])
         fg_row = build_fg_row(fg_product, fg_unit, float(fg_spec["qty"]))
+        if fg_spec.get("routing"):
+            fg_row["routing_list"] = build_routing_list(
+                fg_spec["routing"], routing_ops, f"BOM[{bom_idx}].FG")
 
         rm_rows: list[dict[str, Any]] = []
         linked_rm_item_ids: list[int] = []
@@ -690,6 +788,9 @@ def main() -> None:
             rm_row = build_rm_row(product, unit, rm_quantity,
                                   float(fg_spec["qty"]), idx + 1,
                                   palette[idx % len(palette)])
+            if spec.get("routing"):
+                rm_row["routing_list"] = build_routing_list(
+                    spec["routing"], routing_ops, f"BOM[{bom_idx}].RM[{idx}]")
             expected_view_rows += 1  # the top-level RM itself
 
             child_selector = spec.get("child_bom")
@@ -726,6 +827,8 @@ def main() -> None:
         # this env, cycle through the other non-reject stores as doc_wip_store
         # before giving up. On total failure, dump the exact payload + server
         # response so the real cause is pinpointed in one run, not guessed.
+        routing_agg = build_routing_aggregate(fg_row, rm_rows)
+
         non_reject_ids = [s["id"] for s in stores if s.get("is_reject") == 0]
         wip_candidates = [wip_store_id] + [sid for sid in non_reject_ids if sid != wip_store_id]
         create_resp = None
@@ -735,7 +838,7 @@ def main() -> None:
         for attempt_i, cand_wip in enumerate(wip_candidates):
             payload = build_create_payload(base_data, store_id, cand_wip, series_list, fg_row,
                                            rm_rows, bom_name, other_charges=other_charges,
-                                           scrap_rows=scrap_rows)
+                                           scrap_rows=scrap_rows, routing=routing_agg)
             if attempt_i:
                 log.warning("  create failed (HTTP %s) — retrying %r with doc_wip_store=%s "
                             "(store %d/%d).", last_status, bom_name, cand_wip,

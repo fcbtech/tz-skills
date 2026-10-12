@@ -22,8 +22,9 @@ a demo account" → answer a handful of questions → done.
 Everything runs inside Claude's code-execution sandbox. The sandbox already has Python 3.11+ and
 `requests` available, so the teammate installs nothing on their machine.
 
-The skill bundles the standalone Python scripts (`000_`–`013_`) plus a `data.md.template` under
-`scripts/`. They are `stdlib + requests` only — no external framework imports.
+The skill bundles the standalone Python scripts (`000_`–`013_`, plus the Phase-1 masters step
+`017_seed_routing_masters.py`) plus a `data.md.template` under `scripts/`. They are
+`stdlib + requests` only — no external framework imports.
 
 ## What the run produces
 
@@ -327,6 +328,26 @@ itself:
   Derive scrap from the good's real waste; goods that produce none (a clean assembly, a repair kit)
   simply omit it.
 
+**Routing & machine planning (optional).** For a manufacturing-heavy demo, give the BOMs real
+**production steps** and the **machines/people** that run them — seeded by `017` and attached to BOM
+rows by `004`. Four optional, account-level data.md sections, **all agent-derived from how the good is
+actually made** (never hard-coded), seeded in dependency order:
+- **`[[OPERATOR]]`** — the people (`code`, `name`, `wage_per_hr`).
+- **`[[WORKSTATION_GROUP]]`** — families of machines (`name`, `cost_per_hr`, optional `operator` by
+  code, optional shift `start_time`/`end_time`/`working_days` — sensible defaults applied).
+- **`[[WORKSTATION]]`** — individual machines (`name`, `group` by name, `cost_per_hr`, optional
+  `operator`, optional maintenance dates).
+- **`[[ROUTING_OP]]`** — the steps themselves (`number` (unique), `name`, optional `desc`, optional
+  `workstation_group` / `workstation` / `operator` references). The machine/operator rides on the op.
+
+Then give a BOM row a **`routing = ["OP1", "OP2", …]`** (an ordered list of `[[ROUTING_OP]].number`s)
+on its `[BOM.FG]` or `[[BOM.RM]]` — the steps that make THAT item, in order. Design the steps to the
+real process (e.g. a forged gear: *Cutting → Forging → Machining → Heat-Treat → Inspection*), assign
+each to a fitting machine/group, and put routing where the work happens. It's entirely optional — omit
+all four sections (and all `routing` keys) for a demo with no routing. Keep the master set modest
+(a handful of ops/machines that the BOMs actually reference); every op a row lists must be defined
+under `[[ROUTING_OP]]` or `004` fails fast.
+
 Keep both **consistent with the good and under the cap**: material items + scrap items together must
 stay ≤ 50 (`003` still aborts above 50). The fan in `data.md.template` shows the shape — labour-heavy
 charges on the wound stator, assembly charges on the motor, assembly+packaging charges on the fan,
@@ -414,14 +435,22 @@ BOM is still not a dependency for any later step, so its outcome never affects t
 
 ```bash
 for s in 000_account_setup.py 001_add_network_companies.py \
-         002_add_master_units.py 003_add_inventory_items.py; do
+         002_add_master_units.py 003_add_inventory_items.py \
+         017_seed_routing_masters.py; do
   python3 "scripts/$s" || { echo "PREREQ FAILED: $s — halting"; exit 1; }
   sleep 3
 done
 ```
 
-If any of `000`–`003` exits non-zero, **stop** — show the failing script's stderr/stdout tail and do
-not launch Phase 2. Nothing downstream can work without the shared prerequisite state.
+`017_seed_routing_masters.py` is a **Phase-1 step** (despite the higher number): it seeds the
+machine-planning masters — operators, workstation groups, workstations, and routing operations —
+that `004_create_bom.py` (Phase-2 `bom` lane) attaches to BOM rows. It must run **before Phase 2**,
+only needs the account (`000`), is idempotent, and is a **no-op when data.md declares no routing
+sections**, so it is listed last in the serial loop.
+
+If any of `000`–`003` (or the `017` masters step) exits non-zero, **stop** — show the failing
+script's stderr/stdout tail and do not launch Phase 2. Nothing downstream can work without the shared
+prerequisite state.
 
 **Phase 2 — document steps, run them in parallel BY LANE (each non-fatal):**
 
