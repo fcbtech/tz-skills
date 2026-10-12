@@ -22,8 +22,9 @@ a demo account" → answer a handful of questions → done.
 Everything runs inside Claude's code-execution sandbox. The sandbox already has Python 3.11+ and
 `requests` available, so the teammate installs nothing on their machine.
 
-The skill bundles the standalone Python scripts (`000_`–`013_`) plus a `data.md.template` under
-`scripts/`. They are `stdlib + requests` only — no external framework imports.
+The skill bundles the standalone Python scripts (`000_`–`013_`, plus the Phase-1 configuration step
+`014_set_inventory_entry_qir.py`) plus a `data.md.template` under `scripts/`. They are
+`stdlib + requests` only — no external framework imports.
 
 ## What the run produces
 
@@ -414,14 +415,23 @@ BOM is still not a dependency for any later step, so its outcome never affects t
 
 ```bash
 for s in 000_account_setup.py 001_add_network_companies.py \
-         002_add_master_units.py 003_add_inventory_items.py; do
+         002_add_master_units.py 003_add_inventory_items.py \
+         014_set_inventory_entry_qir.py; do
   python3 "scripts/$s" || { echo "PREREQ FAILED: $s — halting"; exit 1; }
   sleep 3
 done
 ```
 
-If any of `000`–`003` exits non-zero, **stop** — show the failing script's stderr/stdout tail and do
-not launch Phase 2. Nothing downstream can work without the shared prerequisite state.
+`014_set_inventory_entry_qir.py` is a **Phase-1 configuration step** — despite the higher number it
+runs here (not in Phase 2), because it sets a company setting the Phase-2 PO/QIR lane (`008`–`010`)
+depends on: it flips the raw-material inventory-entry side so stock updates on **GRN/QIR** instead of
+plain Inward. It only needs the account to exist (`000`); it is idempotent (re-running when already
+configured is a no-op) and touches no document series, so its position within Phase 1 is flexible —
+it is listed last so the item-seeding order (`000`–`003`) is left unchanged.
+
+If any of `000`–`003` (or the `014` config step) exits non-zero, **stop** — show the failing script's
+stderr/stdout tail and do not launch Phase 2. Nothing downstream can work without the shared
+prerequisite state.
 
 **Phase 2 — document steps, run them in parallel BY LANE (each non-fatal):**
 
