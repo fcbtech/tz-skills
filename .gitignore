@@ -2,3 +2,8 @@
 freshdesk/scripts/.env
 outline/scripts/.env
 keka/scripts/.env
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
