@@ -22,9 +22,10 @@ a demo account" → answer a handful of questions → done.
 Everything runs inside Claude's code-execution sandbox. The sandbox already has Python 3.11+ and
 `requests` available, so the teammate installs nothing on their machine.
 
-The skill bundles the standalone Python scripts (`000_`–`013_`, plus the Phase-1 masters step
-`017_seed_routing_masters.py`) plus a `data.md.template` under `scripts/`. They are
-`stdlib + requests` only — no external framework imports.
+The skill bundles the standalone Python scripts (`000_`–`013_`, plus the Phase-1 configuration steps
+`014_set_inventory_entry_qir.py`, `015_configure_item_image.py` + `016_set_fg_images.py`, and the
+Phase-1 masters step `017_seed_routing_masters.py`) plus a `data.md.template` under `scripts/`. They
+are `stdlib + requests` only — no external framework imports.
 
 ## What the run produces
 
@@ -301,6 +302,15 @@ so the sales steps (which dispatch stock on invoice/challan) don't drive invento
 automatically; you normally don't set anything. To tune a specific item, add **`opening_stock`** (a
 non-negative number) to its BOM row.
 
+**Product images (finished goods only).** For a richer demo, give each **finished good** an
+**`image_url`** on its `[BOM.FG]` row — a direct link to a *real* photo of that product (search for a
+representative image of the actual good and use its direct image URL; it must resolve to an image, not
+a web page). Step 015 creates the "Item Image" field and turns on document image preview; step 016
+writes each FG's `image_url` so the photo shows on the item master and on documents. `image_url` is
+optional and **finished-good only** — don't put it on RM or scrap rows; omit it to leave an FG without
+an image. If you can't find a genuine product photo, leave it blank rather than substituting an
+unrelated or placeholder image.
+
 **Realistic costing (optional, per BOM) — charges + scrap.** A real finished good doesn't cost just
 its raw materials; it costs **rolled-up material + labour/machinery/electricity/other charges −
 scrap recovery**. Make each BOM's cost realistic by adding two optional pieces to its `[[BOM]]`
@@ -436,11 +446,27 @@ BOM is still not a dependency for any later step, so its outcome never affects t
 ```bash
 for s in 000_account_setup.py 001_add_network_companies.py \
          002_add_master_units.py 003_add_inventory_items.py \
+         014_set_inventory_entry_qir.py \
+         015_configure_item_image.py 016_set_fg_images.py \
          017_seed_routing_masters.py; do
   python3 "scripts/$s" || { echo "PREREQ FAILED: $s — halting"; exit 1; }
   sleep 3
 done
 ```
+
+`014_set_inventory_entry_qir.py` is a **Phase-1 configuration step** — despite the higher number it
+runs here (not in Phase 2), because it sets a company setting the Phase-2 PO/QIR lane (`008`–`010`)
+depends on: it flips the raw-material inventory-entry side so stock updates on **GRN/QIR** instead of
+plain Inward. It only needs the account to exist (`000`); it is idempotent (re-running when already
+configured is a no-op) and touches no document series, so its position within Phase 1 is flexible —
+it is listed last so the item-seeding order (`000`–`003`) is left unchanged.
+
+`015_configure_item_image.py` and `016_set_fg_images.py` are **Phase-1 steps** (despite their
+higher numbers): `015` creates the URL-type **"Item Image"** custom field on items and turns on the
+per-document "Image Preview" display option; `016` writes each finished good's `image_url` (from
+data.md) into that field. `016` must run **after `003`** (the items must exist) and **after `015`**
+(the field must exist), so both are listed last in the serial loop. Both are idempotent and need no
+document series. `016` is a no-op when no finished good declares an `image_url`.
 
 `017_seed_routing_masters.py` is a **Phase-1 step** (despite the higher number): it seeds the
 machine-planning masters — operators, workstation groups, workstations, and routing operations —
@@ -448,8 +474,8 @@ that `004_create_bom.py` (Phase-2 `bom` lane) attaches to BOM rows. It must run 
 only needs the account (`000`), is idempotent, and is a **no-op when data.md declares no routing
 sections**, so it is listed last in the serial loop.
 
-If any of `000`–`003` (or the `017` masters step) exits non-zero, **stop** — show the failing
-script's stderr/stdout tail and do not launch Phase 2. Nothing downstream can work without the shared
+If any of `000`–`003` (or the `014`/`015`/`016`/`017` config steps) exits non-zero, **stop** — show
+the failing script's stderr/stdout tail and do not launch Phase 2. Nothing downstream can work without the shared
 prerequisite state.
 
 **Phase 2 — document steps, run them in parallel BY LANE (each non-fatal):**
