@@ -23,10 +23,12 @@ sheet (TranZact's item-import template columns) and POSTed once to
 `/ops_dashboard/product_api/product_submit/`. The server auto-numbers Item IDs
 from the account's product series (we pass the series *prefix* as the Item ID and
 it fills in the running number). This sets name, Product/Service, type
-(Buy/Sell/Both), unit, price and GST in one shot. Opening stock is intentionally
-NOT set (the bulk template has no field for it; it is cosmetic and nothing
-downstream requires it). Re-running is safe — items already present are skipped
-before the upload.
+(Buy/Sell/Both), unit, price, GST, **HSN code** and **opening stock** in one shot.
+HSN comes from each BOM row's optional `hsn` (agent-derived per item); opening
+stock is the template's `Current Stock` column, seeded to a positive default
+(`OPENING_STOCK_DEFAULT`, overridable per row via `opening_stock`) so the sales
+steps don't drive inventory negative. Re-running is safe — items already present
+are skipped before the upload.
 """
 
 from __future__ import annotations
@@ -70,22 +72,32 @@ DEFAULT_HEADERS = {
     "Tz-Request-Source": "webapp",
 }
 
-# Item-import template columns the bulk endpoint expects (exact labels; the
-# "Item Type (Buy/Sell/Both)" header is required — the upload is rejected without
-# it). Optional numeric columns (other prices, min/max stock level) are omitted:
-# the endpoint rejects empty numeric cells, so we simply don't include them.
+# Item-import template columns the bulk endpoint expects (exact labels, matching
+# TranZact's Product_Add.xlsx; the "Item Type (Buy/Sell/Both)" header is required —
+# the upload is rejected without it). Column order follows the template.
+# `HSN Code` is written as text (blank is fine — it's Optional). `Current Stock`
+# (opening stock) is numeric, so we ALWAYS populate it (default below): the endpoint
+# rejects empty numeric cells. Other optional numeric columns (other prices,
+# min/max stock level) are still omitted for the same reason.
 BULK_COLUMNS = [
     "Item ID",
     "Item Name",
     "Product/Service",
     "Item Type (Buy/Sell/Both)",
     "Unit of Measurement",
+    "HSN Code",
     "Default Price",
+    "Current Stock",
     "Tax",
 ]
 
 _VALID_TYPES = {"Buy", "Sell", "Both"}
 _REQUIRED_STR_KEYS = ("name", "type", "unit")
+
+# Opening stock seeded into every item's `Current Stock` when a BOM row doesn't
+# specify `opening_stock`. Positive so the sales steps (dispatch on invoice/challan)
+# never drive inventory negative in the demo. Overridable per row via `opening_stock`.
+OPENING_STOCK_DEFAULT = 1000
 
 # HARD server-load ceiling on the number of inventory items a single run may create.
 # This is a deterministic backstop, NOT a soft guideline: 003 is the only script that
@@ -173,9 +185,19 @@ def _load_items(raw: Any) -> list[dict[str, Any]]:
         ptype = str(entry["type"])
         unit_price = price / qty
 
+        # Optional HSN code (text; blank allowed) and opening stock (Current Stock).
+        hsn = str(entry.get("hsn") or "").strip()
+        opening = entry.get("opening_stock")
+        if opening is not None and (not _is_number(opening) or opening < 0):
+            sys.exit(
+                f"{loc} (name={entry['name']!r}) has invalid opening_stock {opening!r}; "
+                f"must be a non-negative number"
+            )
+
         existing = by_name.get(name)
         if existing is None:
-            by_name[name] = {"name": name, "type": ptype, "unit": unit, "price": unit_price}
+            by_name[name] = {"name": name, "type": ptype, "unit": unit, "price": unit_price,
+                             "hsn": hsn, "opening_stock": opening}
             order.append(name)
         else:
             if existing["type"] != ptype:
@@ -492,8 +514,13 @@ def ensure_products(token: str) -> None:
 
     rows: list[list[Any]] = [BULK_COLUMNS]
     for item in to_create:
+        opening = item.get("opening_stock")
+        opening = OPENING_STOCK_DEFAULT if opening is None else opening
+        # Column order must match BULK_COLUMNS:
+        # Item ID, Item Name, Product/Service, Item Type, Unit, HSN Code, Default Price, Current Stock, Tax
         rows.append(
-            [prefix, item["name"], "Product", item["type"], item["unit"], item["price"], gst_rate]
+            [prefix, item["name"], "Product", item["type"], item["unit"],
+             item.get("hsn") or "", item["price"], opening, gst_rate]
         )
     xlsx = build_xlsx(rows)
 
