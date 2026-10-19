@@ -2,13 +2,14 @@
 name: demo-account-setup
 description: >
   Spin up a fresh Tranzact demo account end-to-end: signup, company onboarding, network counter-parties,
-  master units, inventory items, and three pre-canned Order-Confirmation flows (OC + Invoice + Challan
-  variations). Use this skill whenever the user wants to "create a demo account", "set up a new
-  Tranzact demo", "make a fresh test company", "seed an account for a demo", "build a sandbox account
-  for a customer demo", or any phrasing that implies provisioning a brand-new Tranzact account with
-  pre-populated transactional data. Intended for non-technical teammates — the skill collects inputs
-  conversationally, fills `data.md`, runs the bundled scripts in order inside Claude's code-execution
-  sandbox, and reports the credentials to share with the demo audience. The skill ONLY uses the
+  master units, inventory items, costed BOMs (with optional routing and item images), and pre-canned
+  transactions: Order Confirmations with invoices and challans, Purchase
+  Orders with inwards and QIRs, and sales enquiries and quotations. Use this skill whenever the user
+  wants to "create a demo account", "set up a new Tranzact demo", "make a fresh test company", "seed an
+  account for a demo", "build a sandbox account for a customer demo", or any phrasing that implies
+  provisioning a brand-new Tranzact account with pre-populated transactional data. Intended for
+  non-technical teammates — it collects inputs conversationally, fills `data.md`, runs the bundled
+  scripts in order in Claude's code-execution sandbox, and reports the credentials to share. The skill ONLY uses the
   standalone scripts shipped with it under `scripts/`. Do NOT use this skill to test arbitrary API
   endpoints or to catalog a curl.
 ---
