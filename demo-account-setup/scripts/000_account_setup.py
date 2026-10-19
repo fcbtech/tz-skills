@@ -62,6 +62,10 @@ SECTOR = "Manufacturing"
 IS_MANUFACTURING = "Yes"
 CREATE_EINVOICE = "Yes"
 POC_DESIGNATION = "Owner / Director"
+# Marks every account this skill creates as a demo/sandbox company, so demos can be
+# identified/filtered later. Sent inside company_meta_data (a "Yes"/"No" string, matching
+# its siblings). This skill ONLY creates demo accounts, so it is always "Yes".
+IS_DEMO = "Yes"
 USER_DESIGNATION = "Owner / Director"
 MOBILE_CONSENT = False
 ADDRESS_NAME = "Office"
@@ -125,6 +129,40 @@ def call(method: str, path: str, payload: dict | None = None, authed: bool = Tru
         return {"status_code": response.status_code, "text": response.text}
 
 
+def _try_post(path: str, payload: dict) -> tuple[int, str]:
+    """POST without exiting on error — returns (status_code, body). Used where the
+    caller wants to retry (e.g. the company-identifier fallback below)."""
+    url = f"{BASE_URL}{path}"
+    log.info(">>> POST %s", path)
+    r = requests.post(url, json=payload, headers=_headers(True), timeout=TIMEOUT)
+    log.info("<<< POST %s -> %d", path, r.status_code)
+    return r.status_code, r.text
+
+
+def _post_address_master(path: str, name: str, company: dict) -> None:
+    """POST a v3 address master, resilient to WHICH company identifier the backend
+    wants. Historically these routes required the company **uuid** (integer id →
+    422 "UUID input should be a string"); on current prod they **404 on the uuid**
+    and accept the integer company **id** instead — the accepted identifier flipped
+    between releases. So try each identifier in turn until one is accepted."""
+    candidates = []
+    for key in ("uuid", "id"):
+        v = company.get(key)
+        if v is not None and v not in candidates:
+            candidates.append(v)
+    if not candidates:
+        sys.exit("Could not resolve any company identifier (uuid/id) from /profile/info/fetch/.")
+    last = ""
+    for cand in candidates:
+        status, body = _try_post(path, _address_payload(name, cand))
+        if status < 400:
+            log.info("    %s accepted company identifier %r", path, cand)
+            return
+        last = f"HTTP {status}: {body[:200]}"
+        log.info("    %s rejected identifier %r (%s) — trying next", path, cand, last)
+    sys.exit(f"POST {path} failed for every company identifier {candidates}: {last}")
+
+
 # --- Phase 1: Signup --------------------------------------------------------
 
 
@@ -144,6 +182,36 @@ def signup(email: str, password: str) -> dict:
     SESSION.refresh_token = refresh
     log.info("Signup complete; tokens captured.")
     return data
+
+
+def refresh_company_scoped_token(email: str, password: str) -> None:
+    """Re-login via password-login to get a COMPANY-SCOPED access token.
+
+    The signup token was issued before the company existed, so it isn't scoped to
+    it. The v3 settings service resolves the company against the caller's token —
+    so posting the Phase-3 masters (billing / delivery / bank) with the signup
+    token 404s ("Target company … not found") even though the company UUID is
+    correct (the value is read straight from /profile/info/fetch/). Every other
+    script (001+) authenticates with password-login AFTER the company exists and
+    hits the same /api/v3/settings/* routes fine — do the same here before Phase 3.
+    (POST /main/login/password-login/ — the same call 002 uses.)
+    """
+    url = f"{BASE_URL}/main/login/password-login/"
+    log.info(">>> POST /main/login/password-login/ (refresh company-scoped token)")
+    response = requests.post(url, json={"email": email, "password": password},
+                             headers=_headers(authed=False), timeout=TIMEOUT)
+    log.info("<<< POST /main/login/password-login/ -> %d", response.status_code)
+    if response.status_code >= 400:
+        sys.exit(f"Re-login (password-login) failed (HTTP {response.status_code}): {response.text[:300]}")
+    data = (response.json() or {}).get("data") or {}
+    token = data.get("access_token") or data.get("access")
+    if not token:
+        sys.exit(f"Re-login response missing access token. Keys: {list(data.keys())}")
+    SESSION.access_token = token
+    refresh = data.get("refresh_token") or data.get("refresh")
+    if refresh:
+        SESSION.refresh_token = refresh
+    log.info("Company-scoped token acquired; using it for the Phase 3 v3 masters.")
 
 
 # --- Phase 2: Onboarding ----------------------------------------------------
@@ -166,6 +234,7 @@ def update_company_profile() -> dict:
                 "is_manufacturing": IS_MANUFACTURING,
                 "create_einvoice": CREATE_EINVOICE,
                 "poc_designation": POC_DESIGNATION,
+                "is_demo": IS_DEMO,          # flag this as a demo/sandbox company
             },
         },
     )
@@ -258,18 +327,34 @@ def main() -> None:
     if user.get("first_name") != DATA["FIRST_NAME"]:
         sys.exit(f"User first_name mismatch: server={user.get('first_name')!r} expected={DATA['FIRST_NAME']!r}")
 
+    # Verify the demo flag actually persisted. company_meta_data may be a free-form
+    # blob (key survives) or a validated object (unknown keys silently dropped) — we
+    # can't know without reading it back. NON-FATAL: warn loudly if it didn't stick
+    # (so the backend can whitelist the key) rather than failing demo creation.
+    meta = company.get("company_meta_data")
+    if isinstance(meta, dict):
+        if meta.get("is_demo") == IS_DEMO:
+            log.info("Demo flag persisted: company_meta_data.is_demo=%r", meta.get("is_demo"))
+        else:
+            log.warning(
+                "⚠️  Demo flag NOT persisted — company_meta_data.is_demo came back %r "
+                "(expected %r). The backend is likely dropping the unknown key; ask them to "
+                "whitelist `is_demo` in company_meta_data (and make it filterable).",
+                meta.get("is_demo"), IS_DEMO,
+            )
+    else:
+        log.info("Could not verify demo flag — /profile/info/fetch/ did not return "
+                 "company_meta_data; confirm persistence separately.")
+
     log.info("=== Phase 3: Masters (billing / delivery / bank) ===")
-    # v3 settings endpoints expect the company UUID (data.company.uuid), NOT the
-    # integer PK (data.company.id) or the JWT company_id claim — both of which are
-    # ints and trigger a 422 "UUID input should be a string..." on these routes.
-    company_id = company.get("uuid")
-    if not company_id:
-        sys.exit(
-            "Could not resolve company UUID from /profile/info/fetch/ (data.company.uuid); v3 settings masters require it."
-        )
-    log.info("Resolved company UUID=%s for v3 settings masters", company_id)
-    call("POST", "/api/v3/settings/billing-addresses/", payload=_address_payload(ADDRESS_NAME, company_id))
-    call("POST", "/api/v3/settings/delivery-locations/", payload=_address_payload(ADDRESS_NAME, company_id))
+    # Cheap safety step: re-login so these calls carry a company-scoped token (the
+    # signup token predates the company). The MAIN fix, though, is the company
+    # identifier: these v3 routes flip-flopped between wanting the uuid and the
+    # integer id across releases, so `_post_address_master` tries each until one is
+    # accepted (prod currently 404s on the uuid and accepts the id).
+    refresh_company_scoped_token(email, password)
+    _post_address_master("/api/v3/settings/billing-addresses/", ADDRESS_NAME, company)
+    _post_address_master("/api/v3/settings/delivery-locations/", ADDRESS_NAME, company)
     create_bank_account()
 
     log.info("=== Account Credentials ===")

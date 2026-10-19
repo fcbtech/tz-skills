@@ -94,6 +94,82 @@ LOGO_PATH = ""
 # (For a quick, non-realistic seed instead, a FLAT set of single-level BOMs is a
 # supported option — see SKILL.md.)
 
+# ===========================================================================
+# ROUTING & MACHINE PLANNING (optional) — seeded by 017, attached to BOMs by 004
+# ===========================================================================
+# Define the production steps ("routing operations") your BOMs use, plus the
+# machines/people that run them. All four sections are OPTIONAL and account-level
+# (created once). Reference an op from a BOM row's `routing = [...]` by its `number`.
+# Design these to suit the real industry, exactly like the BOM tree — the fan
+# below is only an illustration. Omit all four sections for no routing at all.
+#
+# Dependency order (seeded in this order; refs are by code/name):
+#   OPERATOR  ->  WORKSTATION_GROUP  ->  WORKSTATION  ->  ROUTING_OP
+
+# -- Operators (the people) -------------------------------------------------
+[[OPERATOR]]
+code = "OP01"
+name = "Ramesh Kumar"
+wage_per_hr = 150
+# comment = "Senior winder"
+
+[[OPERATOR]]
+code = "OP02"
+name = "Suresh Patel"
+wage_per_hr = 120
+
+# -- Workstation groups (families of machines) ------------------------------
+[[WORKSTATION_GROUP]]
+name = "Winding Group"
+cost_per_hr = 300
+operator = "OP01"            # OPTIONAL, by OPERATOR.code
+# start_time = "10:00"       # OPTIONAL (default 10:00)
+# end_time = "18:00"         # OPTIONAL (default 18:00)
+# working_days = ["Monday","Tuesday","Wednesday","Thursday","Friday"]  # OPTIONAL (default all 7)
+
+[[WORKSTATION_GROUP]]
+name = "Testing Group"
+cost_per_hr = 150
+
+# -- Workstations (individual machines) -------------------------------------
+[[WORKSTATION]]
+name = "Winding Machine 1"
+group = "Winding Group"      # REQUIRED, by WORKSTATION_GROUP.name
+cost_per_hr = 300
+operator = "OP01"            # OPTIONAL
+# last_maintenance_date / next_maintenance_date = "YYYY-MM-DD"  # OPTIONAL
+
+[[WORKSTATION]]
+name = "Test Bench 1"
+group = "Testing Group"
+cost_per_hr = 150
+
+# -- Routing operations (the steps; referenced from BOM rows) ---------------
+[[ROUTING_OP]]
+number = "WIND1"             # REQUIRED, unique; this is what a BOM row's `routing` lists
+name = "Winding"
+desc = "Wind copper onto the stator core"
+workstation_group = "Winding Group"   # OPTIONAL, by WORKSTATION_GROUP.name
+workstation = "Winding Machine 1"     # OPTIONAL, by WORKSTATION.name
+operator = "OP01"                     # OPTIONAL, by OPERATOR.code
+
+[[ROUTING_OP]]
+number = "TEST1"
+name = "Testing"
+workstation_group = "Testing Group"
+workstation = "Test Bench 1"
+operator = "OP02"
+
+[[ROUTING_OP]]
+number = "CUT1"
+name = "Cutting"
+# a routing op can have no machine assigned (manual step)
+
+
+# ===========================================================================
+# BILL OF MATERIALS
+# ===========================================================================
+
 # ---- Level 2 (deepest): STATOR — wound in-house from copper + core ----------
 [[BOM]]
 [BOM.FG]
@@ -102,6 +178,17 @@ unit = "Nos"
 name = "Stator 400mm"
 price = 480
 type = "Both"
+hsn = "8503"                 # OPTIONAL per row: HSN/SAC code, agent-derived to suit the item.
+# opening_stock = 2000       # OPTIONAL per row: starting Current Stock; omit -> a positive
+                             #   default is seeded so the sales steps don't go negative.
+# image_url = "https://.../stator.jpg"   # OPTIONAL, finished goods ONLY: a direct link to a
+                             #   real product photo. Step 016 writes it into the item's
+                             #   "Item Image" field so the photo shows on the item master and
+                             #   (with preview on, step 015) on documents. Omit -> no image.
+routing = ["WIND1", "TEST1"] # OPTIONAL: ordered production steps for THIS item, by the
+                             #   `number` of a [[ROUTING_OP]] below. Works on [BOM.FG] and
+                             #   [[BOM.RM]] rows. The op's machine/operator (if any) comes
+                             #   along. Omit -> no routing on this row.
 
 # Winding is manual + a winding machine; small electricity draw. (material ~459)
 [BOM.charges]
@@ -116,6 +203,8 @@ unit = "Kg"
 name = "Copper Winding Wire"
 price = 315
 type = "Both"
+hsn = "7408"                 # OPTIONAL: HSN also applies to RM / scrap rows.
+routing = ["CUT1"]           # OPTIONAL: an RM can have its own routing sequence too.
 
 [[BOM.RM]]
 qty = 1

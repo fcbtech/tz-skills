@@ -2,13 +2,14 @@
 name: demo-account-setup
 description: >
   Spin up a fresh Tranzact demo account end-to-end: signup, company onboarding, network counter-parties,
-  master units, inventory items, and three pre-canned Order-Confirmation flows (OC + Invoice + Challan
-  variations). Use this skill whenever the user wants to "create a demo account", "set up a new
-  Tranzact demo", "make a fresh test company", "seed an account for a demo", "build a sandbox account
-  for a customer demo", or any phrasing that implies provisioning a brand-new Tranzact account with
-  pre-populated transactional data. Intended for non-technical teammates — the skill collects inputs
-  conversationally, fills `data.md`, runs the bundled scripts in order inside Claude's code-execution
-  sandbox, and reports the credentials to share with the demo audience. The skill ONLY uses the
+  master units, inventory items, costed BOMs (with optional routing and item images), and pre-canned
+  transactions: Order Confirmations with invoices and challans, Purchase
+  Orders with inwards and QIRs, and sales enquiries and quotations. Use this skill whenever the user
+  wants to "create a demo account", "set up a new Tranzact demo", "make a fresh test company", "seed an
+  account for a demo", "build a sandbox account for a customer demo", or any phrasing that implies
+  provisioning a brand-new Tranzact account with pre-populated transactional data. Intended for
+  non-technical teammates — it collects inputs conversationally, fills `data.md`, runs the bundled
+  scripts in order in Claude's code-execution sandbox, and reports the credentials to share. The skill ONLY uses the
   standalone scripts shipped with it under `scripts/`. Do NOT use this skill to test arbitrary API
   endpoints or to catalog a curl.
 ---
@@ -22,8 +23,10 @@ a demo account" → answer a handful of questions → done.
 Everything runs inside Claude's code-execution sandbox. The sandbox already has Python 3.11+ and
 `requests` available, so the teammate installs nothing on their machine.
 
-The skill bundles the standalone Python scripts (`000_`–`013_`) plus a `data.md.template` under
-`scripts/`. They are `stdlib + requests` only — no external framework imports.
+The skill bundles the standalone Python scripts (`000_`–`013_`, plus the Phase-1 configuration steps
+`014_set_inventory_entry_qir.py`, `015_configure_item_image.py` + `016_set_fg_images.py`, and the
+Phase-1 masters step `017_seed_routing_masters.py`) plus a `data.md.template` under `scripts/`. They
+are `stdlib + requests` only — no external framework imports.
 
 ## What the run produces
 
@@ -41,7 +44,9 @@ After a successful run the demo account will have:
    multi-level one seeds more) — but is **hard-capped at 50 unique items**, a server-load ceiling
    `003` enforces (it aborts before creating anything if the tree exceeds 50). The top finished good
    is typed `"Sell"`; sub-assemblies and bought leaves are `"Both"`, so there are always ample
-   sell-capable and buy-capable items for the downstream document steps.
+   sell-capable and buy-capable items for the downstream document steps. Each item carries its
+   **HSN code** (from the BOM's `hsn`) and a positive **opening stock**, so invoices show HSNs and
+   inventory doesn't start negative.
 5. Three Order Confirmation flows (sales side). Each script picks its line items **at random**
    from the full sellable-goods catalog (no fixed offset), so the exact products vary per run
    while the catalog is exercised broadly across repeated runs. A little overlap between
@@ -285,6 +290,28 @@ Sheets, …). The 003 script creates one inventory item per unique name at the p
 auto-attaches the company's default GST — **do not** put a tax field in the BOM (003 fails fast if
 the account has no GST master).
 
+**HSN codes (per item).** Give every BOM row an **`hsn`** — a realistic HSN/SAC code appropriate to
+that item, derived like the rest of the seed (e.g. a decorative glass mirror ≈ `7009`, float glass ≈
+`7005`, an MDF moulding ≈ `4411`, a copper wire ≈ `7408`). It flows into the item master and then onto
+every invoice/OC/PO, so a demo without HSNs looks half-set-up. `hsn` is optional in the schema (blank
+is accepted), but **author one for each item** unless the teammate says otherwise. It goes on `[BOM.FG]`,
+`[[BOM.RM]]` and `[[BOM.scrap]]` rows alike; reused item names take the first occurrence's HSN.
+
+**Opening stock (avoids negative inventory).** 003 seeds every item with a positive **Current Stock**
+so the sales steps (which dispatch stock on invoice/challan) don't drive inventory negative — a common
+"why is everything in the red" complaint on fresh demo accounts. A sensible default is applied
+automatically; you normally don't set anything. To tune a specific item, add **`opening_stock`** (a
+non-negative number) to its BOM row.
+
+**Product images (finished goods only).** For a richer demo, give each **finished good** an
+**`image_url`** on its `[BOM.FG]` row — a direct link to a *real* photo of that product (search for a
+representative image of the actual good and use its direct image URL; it must resolve to an image, not
+a web page). Step 015 creates the "Item Image" field and turns on document image preview; step 016
+writes each FG's `image_url` so the photo shows on the item master and on documents. `image_url` is
+optional and **finished-good only** — don't put it on RM or scrap rows; omit it to leave an FG without
+an image. If you can't find a genuine product photo, leave it blank rather than substituting an
+unrelated or placeholder image.
+
 **Realistic costing (optional, per BOM) — charges + scrap.** A real finished good doesn't cost just
 its raw materials; it costs **rolled-up material + labour/machinery/electricity/other charges −
 scrap recovery**. Make each BOM's cost realistic by adding two optional pieces to its `[[BOM]]`
@@ -311,6 +338,26 @@ itself:
     and produced as scrap). Use this when the offcut genuinely re-enters production.
   Derive scrap from the good's real waste; goods that produce none (a clean assembly, a repair kit)
   simply omit it.
+
+**Routing & machine planning (optional).** For a manufacturing-heavy demo, give the BOMs real
+**production steps** and the **machines/people** that run them — seeded by `017` and attached to BOM
+rows by `004`. Four optional, account-level data.md sections, **all agent-derived from how the good is
+actually made** (never hard-coded), seeded in dependency order:
+- **`[[OPERATOR]]`** — the people (`code`, `name`, `wage_per_hr`).
+- **`[[WORKSTATION_GROUP]]`** — families of machines (`name`, `cost_per_hr`, optional `operator` by
+  code, optional shift `start_time`/`end_time`/`working_days` — sensible defaults applied).
+- **`[[WORKSTATION]]`** — individual machines (`name`, `group` by name, `cost_per_hr`, optional
+  `operator`, optional maintenance dates).
+- **`[[ROUTING_OP]]`** — the steps themselves (`number` (unique), `name`, optional `desc`, optional
+  `workstation_group` / `workstation` / `operator` references). The machine/operator rides on the op.
+
+Then give a BOM row a **`routing = ["OP1", "OP2", …]`** (an ordered list of `[[ROUTING_OP]].number`s)
+on its `[BOM.FG]` or `[[BOM.RM]]` — the steps that make THAT item, in order. Design the steps to the
+real process (e.g. a forged gear: *Cutting → Forging → Machining → Heat-Treat → Inspection*), assign
+each to a fitting machine/group, and put routing where the work happens. It's entirely optional — omit
+all four sections (and all `routing` keys) for a demo with no routing. Keep the master set modest
+(a handful of ops/machines that the BOMs actually reference); every op a row lists must be defined
+under `[[ROUTING_OP]]` or `004` fails fast.
 
 Keep both **consistent with the good and under the cap**: material items + scrap items together must
 stay ≤ 50 (`003` still aborts above 50). The fan in `data.md.template` shows the shape — labour-heavy
@@ -399,14 +446,38 @@ BOM is still not a dependency for any later step, so its outcome never affects t
 
 ```bash
 for s in 000_account_setup.py 001_add_network_companies.py \
-         002_add_master_units.py 003_add_inventory_items.py; do
+         002_add_master_units.py 003_add_inventory_items.py \
+         014_set_inventory_entry_qir.py \
+         015_configure_item_image.py 016_set_fg_images.py \
+         017_seed_routing_masters.py; do
   python3 "scripts/$s" || { echo "PREREQ FAILED: $s — halting"; exit 1; }
   sleep 3
 done
 ```
 
-If any of `000`–`003` exits non-zero, **stop** — show the failing script's stderr/stdout tail and do
-not launch Phase 2. Nothing downstream can work without the shared prerequisite state.
+`014_set_inventory_entry_qir.py` is a **Phase-1 configuration step** — despite the higher number it
+runs here (not in Phase 2), because it sets a company setting the Phase-2 PO/QIR lane (`008`–`010`)
+depends on: it flips the raw-material inventory-entry side so stock updates on **GRN/QIR** instead of
+plain Inward. It only needs the account to exist (`000`); it is idempotent (re-running when already
+configured is a no-op) and touches no document series, so its position within Phase 1 is flexible —
+it is listed last so the item-seeding order (`000`–`003`) is left unchanged.
+
+`015_configure_item_image.py` and `016_set_fg_images.py` are **Phase-1 steps** (despite their
+higher numbers): `015` creates the URL-type **"Item Image"** custom field on items and turns on the
+per-document "Image Preview" display option; `016` writes each finished good's `image_url` (from
+data.md) into that field. `016` must run **after `003`** (the items must exist) and **after `015`**
+(the field must exist), so both are listed last in the serial loop. Both are idempotent and need no
+document series. `016` is a no-op when no finished good declares an `image_url`.
+
+`017_seed_routing_masters.py` is a **Phase-1 step** (despite the higher number): it seeds the
+machine-planning masters — operators, workstation groups, workstations, and routing operations —
+that `004_create_bom.py` (Phase-2 `bom` lane) attaches to BOM rows. It must run **before Phase 2**,
+only needs the account (`000`), is idempotent, and is a **no-op when data.md declares no routing
+sections**, so it is listed last in the serial loop.
+
+If any of `000`–`003` (or the `014`/`015`/`016`/`017` config steps) exits non-zero, **stop** — show
+the failing script's stderr/stdout tail and do not launch Phase 2. Nothing downstream can work without the shared
+prerequisite state.
 
 **Phase 2 — document steps, run them in parallel BY LANE (each non-fatal):**
 
