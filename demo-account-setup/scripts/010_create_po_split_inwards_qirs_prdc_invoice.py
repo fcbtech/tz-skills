@@ -15,10 +15,17 @@ exercises a full Quality-Inspection + return flow:
   5. QIR #2   — accepts floor(inward2 * 0.90); rejects the remaining 10%.
   6. PRDC     — returns the rejected qty to the original supplier (role flip).
   7. Invoice  — full PO quantity (regardless of returns).
+
+Each QIR/GRN is also batch-tagged: every accepted item gets an auto-generated
+barcode (= batch/lot number) with manufacturing + expiry dates and a rack
+(Info 1) / bin (Info 2), so the demo shows batch-tracked raw-material receipts.
+Set `batch_tracking = false` in data.md to skip it. Batch tagging is enrichment
+only — a failure is logged and never breaks the PO→Inward→QIR→Invoice chain.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import random
@@ -72,6 +79,13 @@ INWARD1_FRACTION = 0.40
 QIR2_ACCEPT_FRACTION = 0.90
 FALLBACK_TAX_RATE = 0.18
 TRANSACTION_TITLE = "PO Split-Inward QIR PRDC Invoice auto-test"
+
+# Batch / lot tracking — attach an auto-generated barcode (= batch no) with
+# manufacturing/expiry dates and rack (Info 1) / bin (Info 2) to each accepted
+# item on every QIR/GRN this script creates. On by default; set
+# `batch_tracking = false` in data.md to skip. Enrichment only — never fatal.
+BATCH_TRACKING = str(DATA.get("batch_tracking", True)).strip().lower() not in ("false", "0", "no", "off")
+BATCH_EXPIRY_YEARS = 2  # expiry = manufacturing (today) + this many years
 
 INR_CURRENCY = {
     "currency_name": "Rupees",
@@ -177,6 +191,14 @@ def _post(token: str, path: str, payload: dict) -> dict:
 
 def _today_ddmmyyyy() -> str:
     return date.today().strftime("%d/%m/%Y")
+
+
+def _plus_years_ddmmyyyy(years: int) -> str:
+    d = date.today()
+    try:
+        return d.replace(year=d.year + years).strftime("%d/%m/%Y")
+    except ValueError:  # 29 Feb in a non-leap target year -> 28 Feb
+        return d.replace(year=d.year + years, day=28).strftime("%d/%m/%Y")
 
 
 def _addr_list(resp: Any) -> list[dict]:
@@ -1059,6 +1081,104 @@ def create_invoice(token: str, ctx: dict, po_view: dict) -> dict:
     return _post(token, "/documents/invoice/create/", payload)
 
 
+# --- Batch / lot tracking (barcode) on QIR/GRN ------------------------------
+
+# Per-item running counter so repeat receipts of the same item get distinct
+# barcodes (e.g. AV095-B1 on QIR #1, AV095-B2 on QIR #2).
+_batch_seq: dict[str, int] = {}
+
+
+def add_batches_to_qir(token: str, qir_id: Any) -> None:
+    """Attach one auto-generated batch to each accepted item on a QIR/GRN.
+
+    In TranZact a batch is a "Barcode Number" record carrying a barcode (= batch
+    number), manufacturing/expiry dates, and two free-text slots — Info 1 (used
+    here as the Rack) and Info 2 (the Bin). A QIR auto-creates an inventory
+    approval; `/inventory/approval/details/` hands back that approval's id plus
+    the exact item array (`items_json`) to post back, so we only augment each
+    item with batch fields and re-post to `set_serial_no_details/`.
+
+    Enrichment only: any failure is logged and swallowed so the main
+    PO/Inward/QIR/Invoice chain is never affected (mirrors the non-fatal BOM).
+    """
+    if not BATCH_TRACKING:
+        return
+    try:
+        headers = _auth_headers(token)
+        resp = requests.get(
+            f"{BASE_URL}/inventory/approval/details/",
+            params={"doc_type": QIR_DOC_TYPE_INT, "doc_id": qir_id, "approval_id": ""},
+            headers=headers,
+            timeout=TIMEOUT,
+        )
+        if resp.status_code >= 400:
+            log.warning("Batch: approval lookup for QIR %s failed (HTTP %d) — skipping", qir_id, resp.status_code)
+            return
+        approvals = ((resp.json() or {}).get("data") or {}).get("approvals") or []
+        if not approvals:
+            log.warning("Batch: no inventory approval found for QIR %s — skipping", qir_id)
+            return
+        approval = approvals[0]
+        approval_id = approval.get("approval_id")
+        items = json.loads(approval.get("items_json") or "[]")
+        if not (approval_id and items):
+            log.warning("Batch: approval for QIR %s has no id/items — skipping", qir_id)
+            return
+
+        mfg = _today_ddmmyyyy()
+        exp = _plus_years_ddmmyyyy(BATCH_EXPIRY_YEARS)
+        for idx, item in enumerate(items, start=1):
+            itemid = item.get("itemid") or "ITEM"
+            seq = _batch_seq[itemid] = _batch_seq.get(itemid, 0) + 1
+            barcode = f"{itemid}-B{seq}"
+            rack = f"RACK-A{idx}"  # Info 1
+            bin_no = f"BIN-{idx:02d}"  # Info 2
+            qty = item.get("approved_quantity") or item.get("doc_quantity") or 0
+            custom_fields = item.get("custom_fields") or {}
+            item.update(
+                {
+                    "prefix": f"{itemid}-B",
+                    "suffix": str(seq),
+                    "manufacturing_date": mfg,
+                    "expiry_date": exp,
+                    "info": rack,
+                    "comment1": bin_no,
+                    "menu": False,
+                    "menu1": False,
+                    "data": [
+                        {
+                            "main_quantity": qty,
+                            "barcode_number": barcode,
+                            "info": rack,
+                            "comment": bin_no,
+                            "manufacturing_date": mfg,
+                            "expiry_date": exp,
+                            "linked_id": None,
+                            "master_linked_id": None,
+                            "print_setting_data": {"custom_fields": custom_fields},
+                        }
+                    ],
+                }
+            )
+
+        save = requests.post(
+            f"{BASE_URL}/inventory/main-inventory/set_serial_no_details/",
+            json={"approval_id": approval_id, "items": items},
+            headers=headers,
+            timeout=TIMEOUT,
+        )
+        if save.status_code >= 400:
+            log.warning("Batch: set_serial for QIR %s failed (HTTP %d): %s", qir_id, save.status_code, save.text[:200])
+            return
+        body = save.json() or {}
+        if body.get("status") == 1:
+            log.info("Batch: tagged %d item(s) on QIR %s with barcode/lot (mfg %s, exp %s)", len(items), qir_id, mfg, exp)
+        else:
+            log.warning("Batch: set_serial for QIR %s returned status=%s: %s", qir_id, body.get("status"), body.get("message"))
+    except Exception as exc:  # enrichment must never break the run
+        log.warning("Batch: failed to tag QIR %s (%s) — continuing", qir_id, exc)
+
+
 # --- Main -------------------------------------------------------------------
 
 
@@ -1092,12 +1212,14 @@ def main() -> None:
 
     log.info("Phase 3: QIR #1 (accept all %d)", inward1_qty)
     qir1_id = _extract_doc_id(create_qir(token, ctx, inward1_id, transaction_id, [inward1_qty]))
+    add_batches_to_qir(token, qir1_id)
 
     log.info("Phase 4: Inward #2 (%d units)", inward2_qty)
     inward2_id = _extract_doc_id(create_inward(token, ctx, po_view, inward2_qty))
 
     log.info("Phase 5: QIR #2 (accept %d / reject %d)", qir2_accept, qir2_reject)
     qir2_id = _extract_doc_id(create_qir(token, ctx, inward2_id, transaction_id, [qir2_accept]))
+    add_batches_to_qir(token, qir2_id)
 
     log.info("Phase 6: PRDC (return %d rejected units)", qir2_reject)
     prdc_id = _extract_doc_id(create_prdc(token, ctx, po_view, qir2_reject))

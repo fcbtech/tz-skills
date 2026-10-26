@@ -30,6 +30,13 @@ BOTH_COMPANY_NAME = "Hardware Mart LLP"
 # to that file before running 013.
 LOGO_PATH = ""
 
+# --- Batch / lot tracking (optional) -----------------------------------------
+# When true (the default), step 010 tags each raw-material item it receives on a
+# QIR/GRN with an auto-generated batch: a barcode (= batch number) plus
+# manufacturing + expiry dates and a rack (Info 1) / bin (Info 2). Nothing to
+# fill in — the values are generated. Set to false to skip batch tagging.
+batch_tracking = true
+
 
 # --- Bill of Materials -------------------------------------------------------
 #

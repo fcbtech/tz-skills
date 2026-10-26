@@ -61,7 +61,11 @@ After a successful run the demo account will have:
    - PO for the first supplier (1 item) → split Inwards (40% + 60%) → two QIRs (full / 90% accept)
      → PRDC for the rejected 10% → Invoice for the full PO quantity. **The QIR step is a premium
      feature** (`grn-qir`); if it isn't enabled, this flow stops after the inwards (non-fatal — the
-     PO + inwards are still created) and the run continues.
+     PO + inwards are still created) and the run continues. **Each QIR/GRN is also batch-tracked:**
+     every accepted raw-material item gets an auto-generated batch — a barcode (= batch/lot number)
+     with manufacturing + expiry dates and a rack (Info 1) / bin (Info 2) — so the demo shows
+     batch-tracked goods receipts. Controlled by `batch_tracking` in data.md (default on); batch
+     tagging is enrichment only and never fails the run.
 7. Three Sales Enquiries (lead-tracking side). **Sales Enquiry is a premium feature** (`ncd`); if it
    isn't enabled, this whole step is skipped (non-fatal) and the run continues.
    - SE for the first buyer (2 items).
