@@ -46,7 +46,10 @@ After a successful run the demo account will have:
    is typed `"Sell"`; sub-assemblies and bought leaves are `"Both"`, so there are always ample
    sell-capable and buy-capable items for the downstream document steps. Each item carries its
    **HSN code** (from the BOM's `hsn`) and a positive **opening stock**, so invoices show HSNs and
-   inventory doesn't start negative.
+   inventory doesn't start negative. When `batch_tracking` is on (default), each new item also gets
+   an **opening-stock batch** — a barcode (= batch/lot number) with manufacturing + expiry dates and
+   a rack (Info 1) / bin (Info 2), seeded on top of the opening stock — so the demo shows batches on
+   opening inventory (and gives the sales steps a batch to exit). Enrichment only; never fails the run.
 5. Three Order Confirmation flows (sales side). Each script picks its line items **at random**
    from the full sellable-goods catalog (no fixed offset), so the exact products vary per run
    while the catalog is exercised broadly across repeated runs. A little overlap between
@@ -54,6 +57,11 @@ After a successful run the demo account will have:
    - OC for the first buyer (4 items).
    - OC for the second buyer (1 item), followed by a Challan and Invoice.
    - OC followed by an Invoice and two split Challans (3 items).
+
+   When `batch_tracking` is on, finalizing an invoice **exits the sold batch**: if a sold good carries
+   batches (e.g. the opening-stock batch from step 3), the oldest batch is drawn down to cover the sold
+   quantity and recorded against the invoice — so the demo shows a finished good's batch leaving stock
+   on sale. Enrichment only; a sold good with no batch is just a plain stock reduction.
 6. Three Purchase Order flows (buy side). Each script picks its line items at random from the
    full buyable-goods catalog:
    - PO for the first supplier (3 items) → Inward (100%) → Invoice.
