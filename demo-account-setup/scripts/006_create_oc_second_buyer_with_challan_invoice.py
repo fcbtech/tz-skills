@@ -16,6 +16,7 @@ Order quantity is randomised at run time within [QTY_MIN, QTY_MAX].
 from __future__ import annotations
 
 import datetime
+import json
 import logging
 import random
 import re
@@ -66,6 +67,12 @@ TRANSACTION_TITLE = "OC sales-demo"
 OC_DOC_TYPE_INT = 4
 CHALLAN_DOC_TYPE_INT = 6
 INVOICE_DOC_TYPE_INT = 2
+
+# Batch / lot tracking — when a finished good that carries batches is sold, the
+# chosen batch(es) must exit stock. TranZact models this as a Barcode selection
+# on the finalized invoice. On by default; `batch_tracking = false` in data.md
+# skips it. Enrichment only — never fatal; lines with no batch are left alone.
+BATCH_TRACKING = str(DATA.get("batch_tracking", True)).strip().lower() not in ("false", "0", "no", "off")
 
 INR_CURRENCY = {
     "currency_name": "Rupees",
@@ -909,6 +916,9 @@ def create_oc_chain(token: str) -> dict:
         sys.exit(f"Invoice create did not return a doc_id. Response: {invoice_resp}")
     log.info("Invoice created: doc_id=%s", invoice_doc_id)
 
+    # Step 4 of batch tracking: if the sold good carries batches, exit them.
+    exit_batches_on_invoice(token, invoice_doc_id)
+
     return {
         "transaction_id": transaction_id,
         "oc_doc_id": oc_doc_id,
@@ -919,6 +929,156 @@ def create_oc_chain(token: str) -> dict:
         "quantity": quantity,
         "delivered_qty": delivered_qty,
     }
+
+
+# --- Batch exit on sale -----------------------------------------------------
+
+
+def _fmt_batch_date(raw: Any) -> str | None:
+    """Typeahead returns dates as 'YYYY-MM-DD HH:MM:SS'; the batch save wants
+    'DD/MM/YYYY'. None/empty pass through untouched."""
+    if not raw:
+        return None
+    text = str(raw).strip()
+    try:
+        return datetime.datetime.strptime(text[:10], "%Y-%m-%d").strftime("%d/%m/%Y")
+    except ValueError:
+        try:
+            return datetime.datetime.strptime(text[:10], "%d/%m/%Y").strftime("%d/%m/%Y")
+        except ValueError:
+            return None
+
+
+def exit_batches_on_invoice(token: str, invoice_id: Any) -> None:
+    """Exit the sold batches when an invoice ships a batch-tracked good (step 4).
+
+    The finalized invoice auto-creates a "Reduce from Store" inventory approval.
+    `/inventory/approval/details/?doc_type=2` hands back that approval's id plus
+    the line array (`items_json`). For each line we ask `/inventory/barcode_typeahead/`
+    for the batches available in that store; if any exist we draw the oldest
+    first until the sold quantity is covered and post the selection to
+    `set_serial_no_details/` — the same endpoint GRN uses, but each `data` row now
+    points at an existing batch via linked_id/master_linked_id instead of minting
+    a fresh barcode.
+
+    Enrichment only: any failure is logged and swallowed so the OC/Challan/Invoice
+    chain is never affected. Most demo goods carry no batch, so a silent skip is
+    the normal path — this fires only for goods seeded with batches (GRN inward
+    or opening stock).
+    """
+    if not BATCH_TRACKING:
+        return
+    try:
+        headers = _auth_headers(token)
+        resp = requests.get(
+            f"{BASE_URL}/inventory/approval/details/",
+            params={"doc_type": INVOICE_DOC_TYPE_INT, "doc_id": invoice_id, "approval_id": ""},
+            headers=headers,
+            timeout=TIMEOUT,
+        )
+        if resp.status_code >= 400:
+            log.warning("Batch exit: approval lookup for invoice %s failed (HTTP %d) — skipping", invoice_id, resp.status_code)
+            return
+        approvals = ((resp.json() or {}).get("data") or {}).get("approvals") or []
+        if not approvals:
+            return  # no inventory approval (e.g. service invoice) — nothing to exit
+        approval = approvals[0]
+        approval_id = approval.get("approval_id")
+        items = json.loads(approval.get("items_json") or "[]")
+        if not (approval_id and items):
+            return
+
+        tagged_items: list[dict] = []
+        for item in items:
+            approval_item_id = item.get("id")
+            product_id = item.get("product_id")
+            from_store = (item.get("from_store") or {}).get("id") or ""
+            need = float(item.get("approved_quantity") or item.get("doc_quantity") or 0)
+            if need <= 0 or not approval_item_id:
+                continue
+            try:
+                ta = requests.get(
+                    f"{BASE_URL}/inventory/barcode_typeahead/",
+                    params={
+                        "approval_id": approval_id,
+                        "approval_item_id": approval_item_id,
+                        "from_store_id": from_store,
+                        "product_id": product_id,
+                        "where_from": "approval_barcode",
+                        "query": "",
+                    },
+                    headers=headers,
+                    timeout=TIMEOUT,
+                )
+                results = (((ta.json() or {}).get("data") or {}).get("results")) or []
+            except Exception:
+                results = []
+            if not results:
+                continue  # this good carries no batch — leave it as a plain reduction
+
+            data: list[dict] = []
+            remaining = need
+            for b in results:
+                if remaining <= 0:
+                    break
+                avail = float(b.get("base_quantity") or 0) - float(b.get("base_quantity_consumed") or 0)
+                if avail <= 0:
+                    continue
+                take = min(avail, remaining)
+                remaining -= take
+                data.append(
+                    {
+                        "main_quantity": take,
+                        "barcode_number": b.get("serial_number"),
+                        "manufacturing_date": _fmt_batch_date(b.get("manufacturing_date")),
+                        "expiry_date": _fmt_batch_date(b.get("expiry_date")),
+                        "linked_id": b.get("id"),
+                        "master_linked_id": b.get("id"),
+                        "print_setting_data": b.get("print_setting_data") or {"custom_fields": item.get("custom_fields") or {}},
+                    }
+                )
+            if not data:
+                continue
+            item.update(
+                {
+                    "prefix": f"{item.get('itemid') or 'ITEM'}-B",
+                    "suffix": "",
+                    "manufacturing_date": None,
+                    "expiry_date": None,
+                    "data": data,
+                    "menu": False,
+                    "menu1": False,
+                }
+            )
+            tagged_items.append(item)
+
+        if not tagged_items:
+            return  # no sold line had a batch — nothing to exit (normal)
+
+        save = requests.post(
+            f"{BASE_URL}/inventory/main-inventory/set_serial_no_details/",
+            json={
+                "approval_id": approval_id,
+                "items": tagged_items,
+                "check_for_duplicate": False,
+                "doc_series": None,
+                "doc_type": 103,
+                "document_type": INVOICE_DOC_TYPE_INT,
+                "doc_id": invoice_id,
+            },
+            headers=headers,
+            timeout=TIMEOUT,
+        )
+        if save.status_code >= 400:
+            log.warning("Batch exit: set_serial for invoice %s failed (HTTP %d): %s", invoice_id, save.status_code, save.text[:200])
+            return
+        body = save.json() or {}
+        if body.get("status") == 1:
+            log.info("Batch exit: shipped batch(es) for %d sold line(s) on invoice %s", len(tagged_items), invoice_id)
+        else:
+            log.warning("Batch exit: set_serial for invoice %s returned status=%s: %s", invoice_id, body.get("status"), body.get("message"))
+    except Exception as exc:  # enrichment must never break the run
+        log.warning("Batch exit: failed for invoice %s (%s) — continuing", invoice_id, exc)
 
 
 # --- Main -------------------------------------------------------------------
