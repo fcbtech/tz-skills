@@ -30,6 +30,17 @@ BOTH_COMPANY_NAME = "Hardware Mart LLP"
 # to that file before running 013.
 LOGO_PATH = ""
 
+# --- Batch / lot tracking (optional) -----------------------------------------
+# When true (the default), the demo is batch/lot tracked end to end with
+# auto-generated batches — each a barcode (= batch number) plus manufacturing +
+# expiry dates and a rack (Info 1) / bin (Info 2). Nothing to fill in — the
+# values are generated. Specifically:
+#   - 003 seeds an opening-stock batch on every new item,
+#   - 010 tags each raw-material item received on a QIR/GRN, and
+#   - 006/007 exit the sold batch when a batch-tracked good is invoiced.
+# All three are enrichment only and never fail the run. Set to false to skip.
+batch_tracking = true
+
 
 # --- Bill of Materials -------------------------------------------------------
 #
