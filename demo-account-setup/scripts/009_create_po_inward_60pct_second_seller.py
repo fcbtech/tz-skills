@@ -325,12 +325,14 @@ def _rehydrate_item(ds_item: dict, tax_master: dict, products_by_id: dict) -> di
 
 def _extract_doc_id(create_resp: dict) -> int:
     data = create_resp.get("data") or {}
+    def _valid(v):  # accept int PKs AND UUIDv7 string ids; reject None/""/0
+        return (isinstance(v, int) and v > 0) or (isinstance(v, str) and v.strip() != "")
     for k in ("doc_id", "id", "document_id"):
-        if isinstance(data.get(k), int):
+        if _valid(data.get(k)):
             return data[k]
     doc = data.get("document") or {}
     for k in ("doc_id", "id"):
-        if isinstance(doc.get(k), int):
+        if _valid(doc.get(k)):
             return doc[k]
     raise RuntimeError(f"Could not extract doc_id from create response keys: {list(data.keys())}")
 
@@ -543,10 +545,33 @@ def create_po(token: str, ctx: dict, qty_by_product: dict[int, int]) -> dict:
     return _post(token, "/documents/po/create/", payload)
 
 
+def _po_doc(po_view: dict) -> dict:
+    """Normalize a PO view into the {transaction:{id,uuid}, document_no_text}
+    shape the rest of this script reads, tolerant of BOTH the old view
+    (data.document_data.transaction) and the new v3 render view, where the
+    transaction id moved to data.document_atoms.meta.transaction_id.value.
+    """
+    data = po_view.get("data") or {}
+    dd = data.get("document_data")
+    if isinstance(dd, dict) and dd.get("transaction"):
+        return dd
+    meta = (data.get("document_atoms") or {}).get("meta") or {}
+
+    def _mv(key):
+        v = meta.get(key)
+        return v.get("value") if isinstance(v, dict) else v
+
+    tid = _mv("transaction_id")
+    return {
+        "transaction": {"id": tid, "uuid": tid},
+        "document_no_text": _mv("transaction_name") or _mv("title") or "",
+    }
+
+
 def create_inward(token: str, ctx: dict, po_view: dict, inward_qty_by_product: dict[int, int]) -> dict:
     self_id = ctx["self_company_id"]
     sup_id = ctx["supplier_id"]
-    po_doc = po_view["data"]["document_data"]
+    po_doc = _po_doc(po_view)
     transaction_id = po_doc["transaction"]["id"]
     po_uuid = po_doc["transaction"].get("uuid")
 
@@ -667,14 +692,14 @@ def main() -> None:
     inward_qty = {pid: math.floor(q * INWARD_FRACTION) for pid, q in po_qty.items()}
 
     log.info(
-        "Phase 1: creating PO for supplier #%d (%s, id=%d)",
+        "Phase 1: creating PO for supplier #%d (%s, id=%s)",
         SUPPLIER_INDEX + 1,
         ctx["supplier_name"],
         ctx["supplier_id"],
     )
     po_resp = create_po(token, ctx, po_qty)
     po_id = _extract_doc_id(po_resp)
-    log.info("PO created — doc_id=%d  qty=%s", po_id, po_qty)
+    log.info("PO created — doc_id=%s  qty=%s", po_id, po_qty)
 
     po_view = _get(
         token, "/documents/document/view/", params={"doc_type": PO_DOC_TYPE_INT, "doc_id": po_id}
@@ -685,10 +710,10 @@ def main() -> None:
     inward_id = _extract_doc_id(inward_resp)
 
     log.info(
-        "Done. PO=%d  Inward=%d  (transaction=%d)",
+        "Done. PO=%s  Inward=%s  (transaction=%s)",
         po_id,
         inward_id,
-        po_view["data"]["document_data"]["transaction"]["id"],
+        _po_doc(po_view)["transaction"]["id"],
     )
 
 

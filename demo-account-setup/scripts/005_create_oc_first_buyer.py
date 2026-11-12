@@ -177,7 +177,7 @@ def _build_item(
     return {
         "id": product["id"],
         "product": product["id"],
-        "uuid": product["uuid"],
+        "uuid": (product.get("uuid") or product["id"]),
         "itemid": product["itemid"],
         "product_name": product["product_name"],
         "item_name": product["product_name"],

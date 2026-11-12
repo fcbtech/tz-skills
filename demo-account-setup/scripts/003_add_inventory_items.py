@@ -23,15 +23,18 @@ sheet (TranZact's item-import template columns) and POSTed once to
 `/ops_dashboard/product_api/product_submit/`. The server auto-numbers Item IDs
 from the account's product series (we pass the series *prefix* as the Item ID and
 it fills in the running number). This sets name, Product/Service, type
-(Buy/Sell/Both), unit, price and GST in one shot. Opening stock is intentionally
-NOT set (the bulk template has no field for it; it is cosmetic and nothing
-downstream requires it). Re-running is safe — items already present are skipped
-before the upload.
+(Buy/Sell/Both), unit, price, GST, **HSN code** and **opening stock** in one shot.
+HSN comes from each BOM row's optional `hsn` (agent-derived per item); opening
+stock is the template's `Current Stock` column, seeded to a positive default
+(`OPENING_STOCK_DEFAULT`, overridable per row via `opening_stock`) so the sales
+steps don't drive inventory negative. Re-running is safe — items already present
+are skipped before the upload.
 """
 
 from __future__ import annotations
 
 import base64
+import datetime
 import io
 import logging
 import re
@@ -70,22 +73,43 @@ DEFAULT_HEADERS = {
     "Tz-Request-Source": "webapp",
 }
 
-# Item-import template columns the bulk endpoint expects (exact labels; the
-# "Item Type (Buy/Sell/Both)" header is required — the upload is rejected without
-# it). Optional numeric columns (other prices, min/max stock level) are omitted:
-# the endpoint rejects empty numeric cells, so we simply don't include them.
+# Item-import template columns the bulk endpoint expects (exact labels, matching
+# TranZact's Product_Add.xlsx; the "Item Type (Buy/Sell/Both)" header is required —
+# the upload is rejected without it). Column order follows the template.
+# `HSN Code` is written as text (blank is fine — it's Optional). `Current Stock`
+# (opening stock) is numeric, so we ALWAYS populate it (default below): the endpoint
+# rejects empty numeric cells. Other optional numeric columns (other prices,
+# min/max stock level) are still omitted for the same reason.
 BULK_COLUMNS = [
     "Item ID",
     "Item Name",
     "Product/Service",
     "Item Type (Buy/Sell/Both)",
     "Unit of Measurement",
+    "HSN Code",
     "Default Price",
+    "Current Stock",
     "Tax",
 ]
 
 _VALID_TYPES = {"Buy", "Sell", "Both"}
 _REQUIRED_STR_KEYS = ("name", "type", "unit")
+
+# Opening stock seeded into every item's `Current Stock` when a BOM row doesn't
+# specify `opening_stock`. Positive so the sales steps (dispatch on invoice/challan)
+# never drive inventory negative in the demo. Overridable per row via `opening_stock`.
+OPENING_STOCK_DEFAULT = 1000
+
+# Batch / lot tracking — after the items exist, give each one an opening-stock
+# *batch* (a "Barcode Number" record carrying a barcode = batch no, mfg/expiry
+# dates and rack (Info 1) / bin (Info 2)) so the demo can show batches on
+# opening inventory and later exit them on a sale. On by default; set
+# `batch_tracking = false` in data.md to skip. Added as a stock adjustment ON
+# TOP of the Excel opening stock (never replaces it) and is enrichment only —
+# any failure is logged and swallowed, so the opening-stock safety net above is
+# never at risk.
+BATCH_TRACKING = str(DATA.get("batch_tracking", True)).strip().lower() not in ("false", "0", "no", "off")
+BATCH_EXPIRY_YEARS = 2  # expiry = manufacturing (today) + this many years
 
 # HARD server-load ceiling on the number of inventory items a single run may create.
 # This is a deterministic backstop, NOT a soft guideline: 003 is the only script that
@@ -173,9 +197,19 @@ def _load_items(raw: Any) -> list[dict[str, Any]]:
         ptype = str(entry["type"])
         unit_price = price / qty
 
+        # Optional HSN code (text; blank allowed) and opening stock (Current Stock).
+        hsn = str(entry.get("hsn") or "").strip()
+        opening = entry.get("opening_stock")
+        if opening is not None and (not _is_number(opening) or opening < 0):
+            sys.exit(
+                f"{loc} (name={entry['name']!r}) has invalid opening_stock {opening!r}; "
+                f"must be a non-negative number"
+            )
+
         existing = by_name.get(name)
         if existing is None:
-            by_name[name] = {"name": name, "type": ptype, "unit": unit, "price": unit_price}
+            by_name[name] = {"name": name, "type": ptype, "unit": unit, "price": unit_price,
+                             "hsn": hsn, "opening_stock": opening}
             order.append(name)
         else:
             if existing["type"] != ptype:
@@ -466,8 +500,12 @@ def _error_reasons(data: dict) -> str:
         return f"(could not parse error file: {exc})"
 
 
-def ensure_products(token: str) -> None:
-    """Create every missing product in one bulk Excel upload, attaching GST."""
+def ensure_products(token: str) -> list[dict]:
+    """Create every missing product in one bulk Excel upload, attaching GST.
+
+    Returns the list of items it created this run (empty if none), so the caller
+    can seed an opening-stock batch on each.
+    """
     masters = fetch_masters(token)
     gst_rate = pick_default_gst_rate(masters)
     if gst_rate is None:
@@ -488,12 +526,17 @@ def ensure_products(token: str) -> None:
 
     if not to_create:
         log.info("All %d products already exist; nothing to upload.", len(ITEMS))
-        return
+        return []
 
     rows: list[list[Any]] = [BULK_COLUMNS]
     for item in to_create:
+        opening = item.get("opening_stock")
+        opening = OPENING_STOCK_DEFAULT if opening is None else opening
+        # Column order must match BULK_COLUMNS:
+        # Item ID, Item Name, Product/Service, Item Type, Unit, HSN Code, Default Price, Current Stock, Tax
         rows.append(
-            [prefix, item["name"], "Product", item["type"], item["unit"], item["price"], gst_rate]
+            [prefix, item["name"], "Product", item["type"], item["unit"],
+             item.get("hsn") or "", item["price"], opening, gst_rate]
         )
     xlsx = build_xlsx(rows)
 
@@ -518,6 +561,118 @@ def ensure_products(token: str) -> None:
             f"Server: {data.get('message')!r}. Row errors: {_error_reasons(data)}"
         )
     log.info("Bulk upload succeeded: %d product(s) created.", uploaded)
+    return to_create
+
+
+# --- Opening-stock batch (step 5 of batch tracking) -------------------------
+
+
+def _today_ddmmyyyy() -> str:
+    return datetime.date.today().strftime("%d/%m/%Y")
+
+
+def _plus_years_ddmmyyyy(years: int) -> str:
+    today = datetime.date.today()
+    try:
+        return today.replace(year=today.year + years).strftime("%d/%m/%Y")
+    except ValueError:  # Feb 29 → use Feb 28 in the target year
+        return today.replace(year=today.year + years, day=28).strftime("%d/%m/%Y")
+
+
+def _default_store_name(token: str) -> str | None:
+    """Name of the company's default main store (where opening stock lands)."""
+    try:
+        rows = _get(token, "/inventory/store/", params={"type": "main", "doc_type": "po"}).get("data", {}).get("results") or []
+    except Exception:
+        return None
+    if not rows:
+        return None
+    store = next((s for s in rows if s.get("is_default")), rows[0])
+    return store.get("name") or store.get("store_name")
+
+
+def seed_opening_batches(token: str, created: list[dict]) -> None:
+    """Give each freshly-created item one opening-stock batch (step 5).
+
+    TranZact creates an opening-stock batch as a manual stock adjustment that
+    ADDS quantity to a store with an inline barcode breakdown: a single
+    `POST /inventory/main-inventory/bulk-stock-transfer/` with `to_store` set
+    (adds stock) and, per item, a `barcode_list` whose quantities sum to the
+    line's `change_quantity`. Each barcode entry becomes a new batch carrying the
+    barcode (= batch no), mfg/expiry dates and rack (info) / bin (comment).
+
+    One call seeds every item (item_list is an array; a product/unit appears once).
+    Added on top of the Excel opening stock, so a later sale has a batch to exit.
+    Enrichment only — any failure is logged and swallowed; the demo still runs
+    (items keep their Excel opening stock, just without a batch).
+    """
+    if not BATCH_TRACKING or not created:
+        return
+    try:
+        store_name = _default_store_name(token)
+        if not store_name:
+            log.warning("Batch: no default store found — skipping opening-stock batches")
+            return
+        mfg = _today_ddmmyyyy()
+        exp = _plus_years_ddmmyyyy(BATCH_EXPIRY_YEARS)
+        item_list: list[dict] = []
+        for idx, item in enumerate(created, start=1):
+            prod = search_product(token, item["name"], item["type"])
+            if not prod:
+                continue  # couldn't resolve the server-assigned Item ID — skip this one
+            itemid = str(prod.get("itemid"))
+            unit = prod.get("unit")
+            unit_name = unit.get("unit_name") if isinstance(unit, dict) else (unit or item.get("unit"))
+            opening = item.get("opening_stock")
+            qty = OPENING_STOCK_DEFAULT if opening is None else opening
+            if not qty or qty <= 0:
+                continue
+            item_list.append(
+                {
+                    "itemid": itemid,
+                    "unit": unit_name,
+                    "price": prod.get("price") or item.get("price") or 0,
+                    "change_quantity": qty,
+                    "adjustment_type": "Other",
+                    "comment": "Opening stock batch",
+                    "barcode_list": [
+                        {
+                            "barcode_number": f"{itemid}-B1",
+                            "quantity": qty,
+                            "manufacturing_date": mfg,
+                            "expiry_date": exp,
+                            "info": f"RACK-A{idx}",
+                            "comment": f"BIN-{idx:02d}",
+                        }
+                    ],
+                }
+            )
+        if not item_list:
+            return
+        body = {
+            "item_list": item_list,
+            "to_store": store_name,
+            "main_comment": "Opening stock (batch-tracked)",
+            "action_type": "manual_adjustment",
+            "use_fifo_price": False,
+            "allow_duplicate_barcode": False,
+        }
+        resp = requests.post(
+            f"{BASE_URL}/inventory/main-inventory/bulk-stock-transfer/",
+            json=body,
+            headers=_auth_headers(token),
+            timeout=UPLOAD_TIMEOUT,
+        )
+        if resp.status_code >= 400:
+            log.warning("Batch: opening-stock seed failed (HTTP %d): %s", resp.status_code, resp.text[:200])
+            return
+        payload = resp.json() or {}
+        if payload.get("status") == 1 or payload.get("success"):
+            log.info("Batch: seeded opening-stock batch on %d item(s) in store %r (mfg %s, exp %s)", len(item_list), store_name, mfg, exp)
+        else:
+            log.warning("Batch: opening-stock seed returned status=%s: %s", payload.get("status"), payload.get("message"))
+    except Exception as exc:  # enrichment must never break the run
+        log.warning("Batch: opening-stock seed failed (%s) — continuing", exc)
 
 
 # --- Main -------------------------------------------------------------------
@@ -540,7 +695,11 @@ def main() -> None:
     validate_units_exist(token)
 
     log.info("=== Bulk-adding %d products (derived from BOM) ===", len(ITEMS))
-    ensure_products(token)
+    created = ensure_products(token)
+
+    if BATCH_TRACKING and created:
+        log.info("=== Seeding opening-stock batches on %d new item(s) ===", len(created))
+        seed_opening_batches(token, created)
 
     log.info("=== Done ===")
 

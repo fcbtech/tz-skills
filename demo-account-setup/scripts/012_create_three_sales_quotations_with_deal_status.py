@@ -244,7 +244,7 @@ def build_item(product: dict, quantity: float, position: int,
     return {
         "id": product["id"],
         "product": product["id"],
-        "uuid": product["uuid"],
+        "uuid": (product.get("uuid") or product["id"]),
         "itemid": product["itemid"],
         "product_name": product["product_name"],
         "item_name": product["product_name"],
@@ -405,8 +405,8 @@ def build_sq_payload(self_id: int, buyer_row: dict, items: list,
 
 
 def view_doc(token: str, doc_type: int, doc_id: int) -> dict:
-    return _get(token, "/documents/document/view/",
-                params={"doc_type": doc_type, "doc_id": doc_id})["data"]["document_data"]
+    return _view_body(_get(token, "/documents/document/view/",
+                params={"doc_type": doc_type, "doc_id": doc_id}), doc_id)
 
 
 def create_sq(token: str, self_id: int, buyer_row: dict, products_with_qty: list,
@@ -610,6 +610,29 @@ def create_oc_from_sq(token: str, self_id: int, buyer_row: dict, sq_id: int,
     if not oc_id:
         raise RuntimeError(f"OC-from-SQ create returned no doc_id: {resp}")
     return oc_id
+
+
+def _view_body(view: dict, doc_id=None) -> dict:
+    """Normalize a /documents/document/view/ response into the old
+    `document_data` dict the scripts read. Tolerant of the new v3 render view,
+    where the raw body is gone and values live under
+    data.document_atoms.meta.<key>.value (transaction id, enquiry_number,
+    se_number, deal_status, ...). Returns {} fields as None rather than raising.
+    """
+    data = view.get("data") or {}
+    dd = data.get("document_data")
+    if isinstance(dd, dict) and (dd.get("transaction") or dd.get("uuid")):
+        return dd
+    meta = (data.get("document_atoms") or {}).get("meta") or {}
+    flat = {}
+    for k, v in meta.items():
+        flat[k] = v.get("value") if isinstance(v, dict) else v
+    tid = flat.get("transaction_id")
+    flat.setdefault("transaction", {"id": tid, "uuid": tid})
+    if doc_id is not None:
+        flat.setdefault("uuid", doc_id)
+    flat.setdefault("document_no_text", flat.get("transaction_name") or flat.get("title") or "")
+    return flat
 
 
 def main() -> None:
