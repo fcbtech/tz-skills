@@ -183,10 +183,19 @@ def _pick_default(rows: list) -> dict:
 
 
 def _find_gst_master(taxes: list, percentage: float) -> dict:
-    for t in taxes:
-        if t.get("tax_type") == "gst" and abs(float(t["tax_percentage"]) - percentage) < 1e-6:
+    gst = [t for t in taxes if t.get("tax_type") == "gst"]
+    for t in gst:
+        if abs(float(t["tax_percentage"]) - percentage) < 1e-6:
             return t
-    sys.exit(f"No GST tax master found at rate {percentage}")
+    # The account may not have the exact rate this demo prefers (e.g. only 18%
+    # configured). Fall back to the closest available GST master instead of
+    # aborting — a demo with a different-but-valid GST rate is fine.
+    if not gst:
+        sys.exit("No GST tax master configured on the account. Enable GST under Settings → Tax Options and re-run.")
+    best = min(gst, key=lambda t: abs(float(t["tax_percentage"]) - percentage))
+    log.warning("No GST master at %.0f%% on this account; falling back to the closest available (%.0f%%).",
+                percentage * 100, float(best["tax_percentage"]) * 100)
+    return best
 
 
 def _build_item_tax(tax_master: dict, product_id: int) -> dict:
@@ -342,7 +351,7 @@ def build_oc_payload(
     item = {
         "id": product["id"],
         "product": product["id"],
-        "uuid": product["uuid"],
+        "uuid": (product.get("uuid") or product["id"]),
         "itemid": product["itemid"],
         "product_name": product["product_name"],
         "item_name": product["product_name"],
@@ -505,7 +514,7 @@ def build_dependent_item(
     return {
         "id": src.get("product") or product["id"],
         "product": src.get("product") or product["id"],
-        "uuid": src.get("uuid") or product["uuid"],
+        "uuid": src.get("uuid") or (product.get("uuid") or product["id"]),
         "itemid": src.get("itemid") or product["itemid"],
         "product_name": src.get("item_name") or product["product_name"],
         "item_name": src.get("item_name") or product["product_name"],

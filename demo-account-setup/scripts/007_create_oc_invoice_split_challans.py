@@ -197,7 +197,7 @@ def _build_oc_item(
     return {
         "id": product["id"],
         "product": product["id"],
-        "uuid": product["uuid"],
+        "uuid": (product.get("uuid") or product["id"]),
         "itemid": product["itemid"],
         "product_name": product["product_name"],
         "item_name": product["product_name"],
@@ -310,15 +310,21 @@ def fetch_random_products(token: str, buyer_id: int) -> list[dict]:
 
 def fetch_tax_master(token: str, rate: float) -> dict:
     rows = _get(token, "/settings/tax/")["data"]["results"]
-    for row in rows:
-        if row.get("tax_type") != "gst":
-            continue
+    gst = [r for r in rows if r.get("tax_type") == "gst"]
+    for row in gst:
         try:
             if abs(float(row.get("tax_percentage") or 0) - rate) < 1e-6:
                 return row
         except (TypeError, ValueError):
             continue
-    sys.exit(f"No GST tax master found at rate {rate}")
+    # Account may not have the exact preferred rate (e.g. only 18% configured).
+    # Fall back to the closest available GST master rather than aborting.
+    if not gst:
+        sys.exit("No GST tax master configured on the account. Enable GST under Settings → Tax Options and re-run.")
+    best = min(gst, key=lambda r: abs(float(r.get("tax_percentage") or 0) - rate))
+    log.warning("No GST master at %.0f%% on this account; falling back to the closest available (%.0f%%).",
+                rate * 100, float(best.get("tax_percentage") or 0) * 100)
+    return best
 
 
 def resolve_doc_number(token: str, self_id: int, doc_type: str, prefix_hint: str) -> tuple[dict, list]:
