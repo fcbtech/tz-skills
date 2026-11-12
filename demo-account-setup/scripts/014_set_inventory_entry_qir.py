@@ -156,16 +156,23 @@ def fetch_document_settings(token: str) -> list[dict]:
 
 
 def set_entry_status(token: str, record: dict, entry_status: int) -> None:
-    """PUT one document-settings record to the given entry_status."""
-    _put(
-        token,
-        f"/api/v3/settings/document-settings/{record['id']}",
-        {
-            "product_type": record["product_type"],
-            "document_type": record["document_type"],
-            "entry_status": entry_status,
-        },
-    )
+    """Set one RM document-settings record to the given entry_status.
+
+    If the mapping already exists (has an id) we PUT to update it. If it doesn't
+    — the backend now returns these as virtual defaults with a null id until a
+    mapping is explicitly created — we POST to the collection to create it (which
+    returns the new record with its id). The old code PUT to `/{id}` which, with
+    id=null, 422'd ("no settings mapping ID").
+    """
+    body = {
+        "product_type": record["product_type"],
+        "document_type": record["document_type"],
+        "entry_status": entry_status,
+    }
+    if record.get("id"):
+        _put(token, f"/api/v3/settings/document-settings/{record['id']}", body)
+    else:
+        _post(token, "/api/v3/settings/document-settings/", body)
 
 
 def configure_inventory_entry(token: str) -> None:
@@ -184,19 +191,6 @@ def configure_inventory_entry(token: str) -> None:
         if record is None:
             # Not fatal — the account simply doesn't expose this record. Warn and move on.
             log.info("No raw-material %s (document_type %d) record found; skipping.", label, doc_type)
-            continue
-        if record.get("id") is None:
-            # The backend now returns these records as virtual defaults with a
-            # null id until a mapping is explicitly created — so there is nothing
-            # to PUT to (doing so 422s: "no settings mapping ID"). Non-fatal:
-            # leave the stock-entry side at its backend default and continue, so
-            # the rest of the run is unaffected. (Setting it requires the newer
-            # create-mapping call — see note in configure_inventory_entry.)
-            log.warning(
-                "RM %s has no settings-mapping id on this account (backend returns id=null); "
-                "cannot update via PUT — leaving it at the backend default and continuing.",
-                label,
-            )
             continue
         if record.get("entry_status") == desired:
             log.info("RM %s already %s — no change.", label, "ON" if desired else "OFF")
