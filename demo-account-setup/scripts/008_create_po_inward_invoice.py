@@ -551,10 +551,33 @@ def create_po(token: str, ctx: dict, qty_by_product: dict[int, int]) -> dict:
     return _post(token, "/documents/po/create/", payload)
 
 
+def _po_doc(po_view: dict) -> dict:
+    """Normalize a PO view into the {transaction:{id,uuid}, document_no_text}
+    shape the rest of this script reads, tolerant of BOTH the old view
+    (data.document_data.transaction) and the new v3 render view, where the
+    transaction id moved to data.document_atoms.meta.transaction_id.value.
+    """
+    data = po_view.get("data") or {}
+    dd = data.get("document_data")
+    if isinstance(dd, dict) and dd.get("transaction"):
+        return dd
+    meta = (data.get("document_atoms") or {}).get("meta") or {}
+
+    def _mv(key):
+        v = meta.get(key)
+        return v.get("value") if isinstance(v, dict) else v
+
+    tid = _mv("transaction_id")
+    return {
+        "transaction": {"id": tid, "uuid": tid},
+        "document_no_text": _mv("transaction_name") or _mv("title") or "",
+    }
+
+
 def create_inward(token: str, ctx: dict, po_view: dict, qty_by_product: dict[int, int]) -> dict:
     self_id = ctx["self_company_id"]
     sup_id = ctx["supplier_id"]
-    po_doc = po_view["data"]["document_data"]
+    po_doc = _po_doc(po_view)
     transaction_id = po_doc["transaction"]["id"]
     po_uuid = po_doc["transaction"].get("uuid")
 
@@ -668,7 +691,7 @@ def create_inward(token: str, ctx: dict, po_view: dict, qty_by_product: dict[int
 def create_invoice(token: str, ctx: dict, po_view: dict) -> dict:
     self_id = ctx["self_company_id"]
     sup_id = ctx["supplier_id"]
-    po_doc = po_view["data"]["document_data"]
+    po_doc = _po_doc(po_view)
     transaction_id = po_doc["transaction"]["id"]
 
     ds = _get(
@@ -825,7 +848,7 @@ def main() -> None:
         po_id,
         inward_id,
         invoice_id,
-        po_view["data"]["document_data"]["transaction"]["id"],
+        _po_doc(po_view)["transaction"]["id"],
     )
 
 

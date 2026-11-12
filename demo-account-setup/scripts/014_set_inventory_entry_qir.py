@@ -185,6 +185,19 @@ def configure_inventory_entry(token: str) -> None:
             # Not fatal — the account simply doesn't expose this record. Warn and move on.
             log.info("No raw-material %s (document_type %d) record found; skipping.", label, doc_type)
             continue
+        if record.get("id") is None:
+            # The backend now returns these records as virtual defaults with a
+            # null id until a mapping is explicitly created — so there is nothing
+            # to PUT to (doing so 422s: "no settings mapping ID"). Non-fatal:
+            # leave the stock-entry side at its backend default and continue, so
+            # the rest of the run is unaffected. (Setting it requires the newer
+            # create-mapping call — see note in configure_inventory_entry.)
+            log.warning(
+                "RM %s has no settings-mapping id on this account (backend returns id=null); "
+                "cannot update via PUT — leaving it at the backend default and continuing.",
+                label,
+            )
+            continue
         if record.get("entry_status") == desired:
             log.info("RM %s already %s — no change.", label, "ON" if desired else "OFF")
             continue

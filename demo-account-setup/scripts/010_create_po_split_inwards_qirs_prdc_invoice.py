@@ -589,10 +589,33 @@ def create_po(token: str, ctx: dict, po_qty: int) -> dict:
 # --- Phase 2 / 4: Inward ----------------------------------------------------
 
 
+def _po_doc(po_view: dict) -> dict:
+    """Normalize a PO view into the {transaction:{id,uuid}, document_no_text}
+    shape the rest of this script reads, tolerant of BOTH the old view
+    (data.document_data.transaction) and the new v3 render view, where the
+    transaction id moved to data.document_atoms.meta.transaction_id.value.
+    """
+    data = po_view.get("data") or {}
+    dd = data.get("document_data")
+    if isinstance(dd, dict) and dd.get("transaction"):
+        return dd
+    meta = (data.get("document_atoms") or {}).get("meta") or {}
+
+    def _mv(key):
+        v = meta.get(key)
+        return v.get("value") if isinstance(v, dict) else v
+
+    tid = _mv("transaction_id")
+    return {
+        "transaction": {"id": tid, "uuid": tid},
+        "document_no_text": _mv("transaction_name") or _mv("title") or "",
+    }
+
+
 def create_inward(token: str, ctx: dict, po_view: dict, qty_to_receive: int) -> dict:
     self_id = ctx["self_company_id"]
     sup_id = ctx["supplier_id"]
-    po_doc = po_view["data"]["document_data"]
+    po_doc = _po_doc(po_view)
     transaction_id = po_doc["transaction"]["id"]
     po_uuid = po_doc["transaction"].get("uuid")
 
@@ -819,7 +842,7 @@ def create_prdc(token: str, ctx: dict, po_view: dict, return_qty: int) -> dict:
     """Purchase Return Delivery Challan — buyer returns rejected goods to original supplier."""
     self_id = ctx["self_company_id"]
     sup_id = ctx["supplier_id"]
-    po_doc = po_view["data"]["document_data"]
+    po_doc = _po_doc(po_view)
     transaction_id = po_doc["transaction"]["id"]
 
     ds = _get(
@@ -954,7 +977,7 @@ def create_prdc(token: str, ctx: dict, po_view: dict, return_qty: int) -> dict:
 def create_invoice(token: str, ctx: dict, po_view: dict) -> dict:
     self_id = ctx["self_company_id"]
     sup_id = ctx["supplier_id"]
-    po_doc = po_view["data"]["document_data"]
+    po_doc = _po_doc(po_view)
     transaction_id = po_doc["transaction"]["id"]
     po_qty_by_product = {it["product"]: float(it["quantity"]) for it in po_doc["items"]}
 
@@ -1204,7 +1227,7 @@ def main() -> None:
     log.info("Phase 1: PO")
     po_id = _extract_doc_id(create_po(token, ctx, po_qty))
     po_view = _fetch_view(token, PO_DOC_TYPE_INT, po_id)
-    transaction_id = po_view["data"]["document_data"]["transaction"]["id"]
+    transaction_id = _po_doc(po_view)["transaction"]["id"]
     log.info("PO doc_id=%s, transaction=%s", po_id, transaction_id)
 
     log.info("Phase 2: Inward #1 (%d units)", inward1_qty)
